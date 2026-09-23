@@ -1,0 +1,38 @@
+{
+  "name": "employix",
+  "version": "0.1.0",
+  "description": "Employix - basic Node.js project scaffold",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "nodemon src/app.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1129.0",
+    "axios": "^1.20.0",
+    "bcryptjs": "^2.4.3",
+    "caller-callsite": "^6.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.0",
+    "ejs": "^6.0.1",
+    "express": "^4.18.2",
+    "express-async-errors": "^3.1.1",
+    "express-mongo-sanitize": "^2.2.0",
+    "express-rate-limit": "^6.7.0",
+    "helmet": "^7.2.0",
+    "joi": "^17.13.7",
+    "jsonwebtoken": "^9.0.0",
+    "mongoose": "^7.0.0",
+    "morgan": "^1.10.0",
+    "multer": "^2.3.0",
+    "nodemailer": "^10.0.1",
+    "uuid": "^14.0.2",
+    "winston": "^3.19.0"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
+  }
+}

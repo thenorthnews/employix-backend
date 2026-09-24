@@ -5,7 +5,7 @@ const EmploymentVerification = require('../../products/user-portal/models/employ
 const Qualification = require('../../products/user-portal/models/qualification.model');
 const Certification = require('../../products/user-portal/models/certification.model');
 const Referral = require('../../products/user-portal/models/referral.model');
-const { uploadImage } = require('../uploads/uploadMulture');
+const { uploadImage } = require('../uploadImage/uploadMulture');
 const { calculateEmployixScore, calculateEmployeeScore, calculateKycStatus } = require('../../helpers/documentHelper');
 
 async function getCurrentUserService(userId) {

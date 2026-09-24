@@ -33,7 +33,7 @@ const {
   submitFeedback,
 } = require('./referral/controllers/referral.controller');
 const { requireAuth } = require('../../middleware/auth');
-const { uploadVerificationDocs, uploadDocument } = require('../../common/uploads/uploadMulture');
+const { uploadVerificationDocs, uploadDocument } = require('../../common/uploadImage/uploadMulture');
 const { kycLimiter } = require('../../middleware/rateLimiter');
 
 // --- Public Reference Verification Endpoints (Accessed by referee via email link) ---

@@ -114,16 +114,95 @@ const resolveErrorInfo = (err, defaultMessage) => {
 
   return { statusCode, message };
 };
-const calculateEmployixScore = ({ aadhaarDone, voterDone, dlDone, empDone, eduDone }) => {
-  return parseFloat(
-    (
-      (aadhaarDone ? 20 : 0) +
-      (voterDone ? 20 : 0) +
-      (dlDone ? 5 : 0) +
-      (empDone ? 35 : 0) +
-      (eduDone ? 20 : 0)
-    ).toFixed(1)
-  );
+/**
+ * Calculates Employee Profile Scoring System (100% Base Maximum)
+ *
+ * Scoring Criteria:
+ * 1. Aadhaar Card = 20% (Verified = 20 pts, Not Verified = 0 pts)
+ * 2. Voter ID Card = 20% (Verified = 20 pts, Not Verified = 0 pts)
+ * 3. Education = 20% (Verified = 20 pts, Not Verified = 0 pts)
+ * 4. Employment = 30% (Verified = 30 pts, Not Verified = 0 pts)
+ * 5. Employee Reference = 10% Maximum
+ *    - Up to 2 references allowed per employee
+ *    - 0 verified references -> 0/10
+ *    - 1 verified reference  -> 5/10 (Earned = 5, Applicable Target = 95)
+ *    - 2 verified references -> 10/10 (Earned = 10, Applicable Target = 100)
+ *    - Missing optional 2nd reference creates NO PENALTY (e.g. 95/95 = 100%)
+ */
+const calculateEmployeeScore = ({
+  aadhaarDone = false,
+  voterDone = false,
+  eduDone = false,
+  empDone = false,
+  verifiedReferencesCount = 0,
+} = {}) => {
+  const isAadhaar = Boolean(aadhaarDone);
+  const isVoter = Boolean(voterDone);
+  const isEdu = Boolean(eduDone);
+  const isEmp = Boolean(empDone);
+
+  const aadhaarScore = isAadhaar ? 20 : 0;
+  const voterScore = isVoter ? 20 : 0;
+  const eduScore = isEdu ? 20 : 0;
+  const empScore = isEmp ? 30 : 0;
+
+  // Max 2 references allowed, 5 points each
+  const validRefCount = Math.min(2, Math.max(0, Number(verifiedReferencesCount) || 0));
+  const referenceScore = validRefCount * 5;
+
+  const totalEarnedScore = aadhaarScore + voterScore + eduScore + empScore + referenceScore;
+
+  // Total Applicable Score is ALWAYS fixed out of 100:
+  // Aadhaar (20) + Voter (20) + Education (20) + Employment (30) + Reference (10) = 100
+  const totalApplicableScore = 100;
+
+  const finalPercentage = Math.min(100, Math.round((totalEarnedScore / totalApplicableScore) * 100));
+
+  return {
+    individualScores: {
+      aadhaar: aadhaarScore,
+      voter: voterScore,
+      education: eduScore,
+      employment: empScore,
+      reference: referenceScore,
+    },
+    aadhaarScore,
+    voterScore,
+    eduScore,
+    empScore,
+    referenceScore,
+    totalEarnedScore,
+    totalApplicableScore,
+    finalPercentage,
+    verifiedReferencesCount: validRefCount,
+    criteria: [
+      { id: 'aadhaar', name: 'Aadhaar Card', weight: '20%', earned: aadhaarScore, max: 20, isVerified: isAadhaar },
+      { id: 'voter', name: 'Voter ID Card', weight: '20%', earned: voterScore, max: 20, isVerified: isVoter },
+      { id: 'education', name: 'Education', weight: '20%', earned: eduScore, max: 20, isVerified: isEdu },
+      { id: 'employment', name: 'Employment', weight: '30%', earned: empScore, max: 30, isVerified: isEmp },
+      {
+        id: 'reference',
+        name: 'Employee Reference',
+        weight: '10% Max',
+        earned: referenceScore,
+        max: 10,
+        isVerified: validRefCount > 0,
+        verifiedCount: validRefCount,
+        displayRatio: `${referenceScore}/10`,
+      },
+    ],
+  };
+};
+
+const calculateEmployixScore = ({ aadhaarDone, voterDone, dlDone, empDone, eduDone, verifiedReferencesCount = 0 }) => {
+  const result = calculateEmployeeScore({
+    aadhaarDone,
+    voterDone,
+    eduDone,
+    empDone,
+    verifiedReferencesCount,
+  });
+  return result.finalPercentage;
 };
 
 const calculateKycStatus = ({ aadhaarDone, voterDone, dlDone, empDone, eduDone }) => {
@@ -148,6 +227,7 @@ module.exports = {
   generateSafeGroupId,
   getGatewayHeaders,
   resolveErrorInfo,
+  calculateEmployeeScore,
   calculateEmployixScore,
   calculateKycStatus,
   hashToken

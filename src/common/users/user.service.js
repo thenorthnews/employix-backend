@@ -4,8 +4,9 @@ const ManualEmployment = require('../../products/user-portal/models/manualEmploy
 const EmploymentVerification = require('../../products/user-portal/models/employmentVerification.model');
 const Qualification = require('../../products/user-portal/models/qualification.model');
 const Certification = require('../../products/user-portal/models/certification.model');
+const Referral = require('../../products/user-portal/models/referral.model');
 const { uploadImage } = require('../uploads/uploadMulture');
-const { calculateEmployixScore, calculateKycStatus } = require('../../helpers/documentHelper');
+const { calculateEmployixScore, calculateEmployeeScore, calculateKycStatus } = require('../../helpers/documentHelper');
 
 async function getCurrentUserService(userId) {
   const user = await User.findById(userId).select('-password -otp -otpExpiry');
@@ -103,8 +104,20 @@ async function getCurrentUserService(userId) {
     console.error('Error loading qualifications/certifications:', err);
   }
 
-  // Calculate dynamic 7-step Trust Score & KYC State (100 Points Total)
-  // Aadhaar: 20 pts, Voter: 20 pts, Qualifications/Certs: 20 pts (only if verified), Employment: 35 pts, Driving License: 5 pts
+  // Load user references & count verified references (Max 2 allowed)
+  let userReferences = [];
+  let completedReferencesCount = 0;
+  try {
+    userReferences = await Referral.find({ referrerId: userId }).sort({ createdAt: -1 }).lean();
+    completedReferencesCount = userReferences.filter(
+      (ref) => ref.status === 'completed' || ref.isFeedbackSubmitted || ref.isPointsAwarded
+    ).length;
+  } catch (refErr) {
+    console.error('Error loading references:', refErr);
+  }
+
+  // Calculate dynamic 100% Employee Profile Score
+  // Aadhaar (20), Voter (20), Education (20), Employment (30), References (10 max, no penalty for missing 2nd ref)
   const aadhaarDone = user.aadhaarStatus === 1 || Boolean(aadhaarData);
   const voterDone = user.voterStatus === 1 || Boolean(voterData);
   const dlDone = user.dlStatus === 1 || Boolean(dlData);
@@ -114,13 +127,15 @@ async function getCurrentUserService(userId) {
     userQualifications.some((q) => q.isVerified === true && q.verificationStatus === 'verified') ||
     userCertifications.some((c) => c.isVerified === true && c.verificationStatus === 'verified');
 
-  const currentScore = calculateEmployixScore({
+  const scoringData = calculateEmployeeScore({
     aadhaarDone,
     voterDone,
-    dlDone,
-    empDone,
     eduDone: eduVerified,
+    empDone,
+    verifiedReferencesCount: completedReferencesCount,
   });
+
+  const currentScore = scoringData.finalPercentage;
 
   const kycState = user.kycStatus === 8 ? 8 : calculateKycStatus({
     aadhaarDone,
@@ -177,6 +192,9 @@ async function getCurrentUserService(userId) {
     rawEpfoRecords: rawEpfoDocs,
     qualifications: userQualifications,
     certifications: userCertifications,
+    references: userReferences,
+    verifiedReferencesCount: completedReferencesCount,
+    profileScoring: scoringData,
   };
 }
 

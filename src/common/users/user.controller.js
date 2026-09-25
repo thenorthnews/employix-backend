@@ -8,7 +8,7 @@ const { registerSchema, verifyOtpSchema, loginSchema,resendOtpSchema,updateProfi
 async function getCurrentUser(req, res, next) {
   try {
     const userId = req.user._id || req.user.id;
-    const user = await getCurrentUserService(userId)
+    const user = await getCurrentUserService(userId, req);
     return success(res, user, 'Current user profile fetched successfully');
   } catch (err) {
    return serverError(res, err);
@@ -30,7 +30,8 @@ if (error) {
     const updatedUser = await updateProfileService(
       userId,
       value,
-      req.file
+      req.file,
+      req
     );
 
     return success(

@@ -8,7 +8,7 @@ const Referral = require('../../products/user-portal/models/referral.model');
 const { uploadImage } = require('../uploadImage/uploadMulture');
 const { calculateEmployixScore, calculateEmployeeScore, calculateKycStatus } = require('../../helpers/documentHelper');
 
-async function getCurrentUserService(userId) {
+async function getCurrentUserService(userId, req = null) {
   const user = await User.findById(userId).select('-password -otp -otpExpiry');
   if (!user) {
     throw new Error('User not found');
@@ -174,8 +174,17 @@ async function getCurrentUserService(userId) {
   }
 
   const userObj = user.toObject();
+  let resolvedProfileImage = userObj.image || userObj.profileImage || '';
+  if (resolvedProfileImage && typeof resolvedProfileImage === 'string' && resolvedProfileImage.startsWith('/uploads/')) {
+    const host = req ? `${req.protocol}://${req.get('host')}` : '';
+    const baseUrl = (process.env.BASE_URL || host || 'http://13.232.68.44:3000').replace(/\/+$/, '');
+    resolvedProfileImage = `${baseUrl}${resolvedProfileImage}`;
+  }
+
   return {
     ...userObj,
+    image: resolvedProfileImage,
+    profileImage: resolvedProfileImage,
     employixId,
     address: resolvedAddress,
     employixScore: currentScore,
@@ -198,17 +207,27 @@ async function getCurrentUserService(userId) {
   };
 }
 
-async function updateProfileService(userId, values, file) {
+async function updateProfileService(userId, values, file, req = null) {
   const updateData = {
     ...values,
   };
 
+  const host = req ? `${req.protocol}://${req.get('host')}` : '';
+  const baseUrl = (process.env.BASE_URL || host || 'http://13.232.68.44:3000').replace(/\/+$/, '');
+
   if (file) {
-    const baseUrl = (process.env.BASE_URL || 'http://13.232.68.44:3000').replace(/\/+$/, '');
     updateData.image = `${baseUrl}/uploads/profile-images/${file.filename}`;
     updateData.profileImage = updateData.image;
-  } else if (updateData.image && !updateData.profileImage) {
-    updateData.profileImage = updateData.image;
+  } else {
+    let rawImg = updateData.image || updateData.profileImage;
+    if (rawImg && typeof rawImg === 'string' && rawImg.trim()) {
+      rawImg = rawImg.trim();
+      const finalImg = (rawImg.startsWith('http://') || rawImg.startsWith('https://'))
+        ? rawImg
+        : `${baseUrl}${rawImg.startsWith('/') ? rawImg : `/${rawImg}`}`;
+      updateData.image = finalImg;
+      updateData.profileImage = finalImg;
+    }
   }
 
   // Remove fields that should not be overwritten
@@ -243,7 +262,7 @@ async function updateProfileService(userId, values, file) {
   }
 
   try {
-    const fullProfile = await getCurrentUserService(userId);
+    const fullProfile = await getCurrentUserService(userId, req);
     return fullProfile;
   } catch (err) {
     return user;

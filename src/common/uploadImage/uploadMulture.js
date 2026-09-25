@@ -16,20 +16,37 @@ const uploadDir = path.join(
 
 
 // Folder automatically create hoga
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, {
-    recursive: true,
-  });
+try {
+  if (fs.existsSync(uploadDir)) {
+    const stat = fs.statSync(uploadDir);
+    if (!stat.isDirectory()) {
+      fs.unlinkSync(uploadDir);
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+  } else {
+    fs.mkdirSync(uploadDir, { recursive: true });
+  }
+} catch (err) {
+  console.error('Error ensuring uploadDir directory:', err);
 }
-
 
 // =====================================
 // MULTER STORAGE
 // =====================================
 
 const storage = multer.diskStorage({
-
   destination: (req, file, cb) => {
+    try {
+      if (fs.existsSync(uploadDir)) {
+        const stat = fs.statSync(uploadDir);
+        if (!stat.isDirectory()) {
+          fs.unlinkSync(uploadDir);
+          fs.mkdirSync(uploadDir, { recursive: true });
+        }
+      } else {
+        fs.mkdirSync(uploadDir, { recursive: true });
+      }
+    } catch (_) {}
     cb(null, uploadDir);
   },
 
@@ -117,12 +134,33 @@ const uploadVerificationDocs = multer({
 // PERSISTENT DOCUMENT ATTACHMENTS (DISK STORAGE)
 // =====================================
 const docUploadDir = path.join(__dirname, '../../uploads/documents');
-if (!fs.existsSync(docUploadDir)) {
-  fs.mkdirSync(docUploadDir, { recursive: true });
+try {
+  if (fs.existsSync(docUploadDir)) {
+    const stat = fs.statSync(docUploadDir);
+    if (!stat.isDirectory()) {
+      fs.unlinkSync(docUploadDir);
+      fs.mkdirSync(docUploadDir, { recursive: true });
+    }
+  } else {
+    fs.mkdirSync(docUploadDir, { recursive: true });
+  }
+} catch (err) {
+  console.error('Error ensuring docUploadDir directory:', err);
 }
 
 const docStorage = multer.diskStorage({
   destination: (req, file, cb) => {
+    try {
+      if (fs.existsSync(docUploadDir)) {
+        const stat = fs.statSync(docUploadDir);
+        if (!stat.isDirectory()) {
+          fs.unlinkSync(docUploadDir);
+          fs.mkdirSync(docUploadDir, { recursive: true });
+        }
+      } else {
+        fs.mkdirSync(docUploadDir, { recursive: true });
+      }
+    } catch (_) {}
     cb(null, docUploadDir);
   },
   filename: (req, file, cb) => {

@@ -21,12 +21,24 @@ app.use(
 app.use(morgan('dev'));
 app.set("view engine", "ejs");
 app.set("views", path.join(__dirname, "views"));
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use(
+  '/uploads',
+  (req, res, next) => {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    next();
+  },
+  express.static(path.join(__dirname, 'uploads'))
+);
 app.use(correlationMiddleware);
 connectDB().catch((err) => {
   console.error('DB connect error:', err);
 });
-app.use(helmet());
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  })
+);
 app.use(globalApiLimiter);
 app.get('/health', (req, res) => {
   res.status(200).json({

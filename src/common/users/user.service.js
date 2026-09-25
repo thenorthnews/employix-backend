@@ -204,7 +204,8 @@ async function updateProfileService(userId, values, file) {
   };
 
   if (file) {
-    updateData.image = `/uploads/profile-images/${file.filename}`;
+    const baseUrl = (process.env.BASE_URL || 'http://13.232.68.44:3000').replace(/\/+$/, '');
+    updateData.image = `${baseUrl}/uploads/profile-images/${file.filename}`;
     updateData.profileImage = updateData.image;
   } else if (updateData.image && !updateData.profileImage) {
     updateData.profileImage = updateData.image;

@@ -53,6 +53,17 @@ const referralSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    lastOtpSentAt: {
+      type: Date,
+      default: null,
+    },
+    previousTokens: [
+      {
+        tokenHash: { type: String, index: true },
+        rawToken: { type: String, index: true },
+        createdAt: { type: Date, default: Date.now },
+      },
+    ],
     status: {
       type: String,
       enum: ['invitation_sent', 'otp_verified', 'completed', 'expired'],

@@ -32,9 +32,16 @@ const {
   verifyOtp,
   submitFeedback,
 } = require('./referral/controllers/referral.controller');
+const {
+  getScoreConfiguration,
+  updateScoreConfiguration,
+} = require('./verification/controllers/scoreConfig.controller');
 const { requireAuth } = require('../../middleware/auth');
 const { uploadVerificationDocs, uploadDocument } = require('../../common/uploadImage/uploadMulture');
 const { kycLimiter } = require('../../middleware/rateLimiter');
+
+// --- Dynamic Score Configuration Endpoints ---
+router.get('/score-config', getScoreConfiguration);
 
 // --- Public Reference Verification Endpoints (Accessed by referee via email link) ---
 router.get('/references/verify-token', validateToken);
@@ -43,6 +50,7 @@ router.post('/references/verify-otp', verifyOtp);
 router.post('/references/submit-feedback', submitFeedback);
 
 router.use(requireAuth);
+router.put('/score-config', updateScoreConfiguration);
 // router.use(kycLimiter);
 
 

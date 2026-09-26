@@ -137,47 +137,48 @@ const resolveErrorInfo = (err, defaultMessage) => {
 
   return { statusCode: statusCode === 500 && (lowerMsg.includes('compliant') || lowerMsg.includes('quality')) ? 400 : statusCode, message };
 };
+const ScoreConfig = require('../products/user-portal/models/scoreConfig.model');
+
 /**
- * Calculates Employee Profile Scoring System (100% Base Maximum)
- *
- * Scoring Criteria:
- * 1. Aadhaar Card = 20% (Verified = 20 pts, Not Verified = 0 pts)
- * 2. Voter ID Card = 20% (Verified = 20 pts, Not Verified = 0 pts)
- * 3. Education = 20% (Verified = 20 pts, Not Verified = 0 pts)
- * 4. Employment = 30% (Verified = 30 pts, Not Verified = 0 pts)
- * 5. Employee Reference = 10% Maximum
- *    - Up to 2 references allowed per employee
- *    - 0 verified references -> 0/10
- *    - 1 verified reference  -> 5/10 (Earned = 5, Applicable Target = 95)
- *    - 2 verified references -> 10/10 (Earned = 10, Applicable Target = 100)
- *    - Missing optional 2nd reference creates NO PENALTY (e.g. 95/95 = 100%)
+ * Computes Score Breakdown given verification flags and dynamic ScoreConfig
  */
-const calculateEmployeeScore = ({
-  aadhaarDone = false,
-  voterDone = false,
-  eduDone = false,
-  empDone = false,
-  verifiedReferencesCount = 0,
-} = {}) => {
+const computeScoreBreakdown = (
+  {
+    aadhaarDone = false,
+    voterDone = false,
+    eduDone = false,
+    empDone = false,
+    verifiedReferencesCount = 0,
+  } = {},
+  scoreConfig = {}
+) => {
   const isAadhaar = Boolean(aadhaarDone);
   const isVoter = Boolean(voterDone);
   const isEdu = Boolean(eduDone);
   const isEmp = Boolean(empDone);
 
-  const aadhaarScore = isAadhaar ? 20 : 0;
-  const voterScore = isVoter ? 20 : 0;
-  const eduScore = isEdu ? 20 : 0;
-  const empScore = isEmp ? 30 : 0;
+  const aadhaarMax = Number(scoreConfig.aadhaarScore ?? 20);
+  const voterMax = Number(scoreConfig.voterScore ?? 20);
+  const eduMax = Number(scoreConfig.educationScore ?? 20);
+  const empMax = Number(scoreConfig.employmentScore ?? 30);
+  const refPerItem = Number(scoreConfig.referenceScorePerItem ?? 5);
+  const maxRefs = Number(scoreConfig.maxReferencesAllowed ?? 2);
+  const refMax = refPerItem * maxRefs;
+  const applicableTotal = Number(
+    scoreConfig.totalApplicableScore ?? (aadhaarMax + voterMax + eduMax + empMax + refMax)
+  );
 
-  // Max 2 references allowed, 5 points each
-  const validRefCount = Math.min(2, Math.max(0, Number(verifiedReferencesCount) || 0));
-  const referenceScore = validRefCount * 5;
+  const aadhaarScore = isAadhaar ? aadhaarMax : 0;
+  const voterScore = isVoter ? voterMax : 0;
+  const eduScore = isEdu ? eduMax : 0;
+  const empScore = isEmp ? empMax : 0;
+
+  // Max references allowed (default 2), points per item (5 to 5, default 5 each)
+  const validRefCount = Math.min(maxRefs, Math.max(0, Number(verifiedReferencesCount) || 0));
+  const referenceScore = validRefCount * refPerItem;
 
   const totalEarnedScore = aadhaarScore + voterScore + eduScore + empScore + referenceScore;
-
-  // Total Applicable Score is ALWAYS fixed out of 100:
-  // Aadhaar (20) + Voter (20) + Education (20) + Employment (30) + Reference (10) = 100
-  const totalApplicableScore = 100;
+  const totalApplicableScore = applicableTotal > 0 ? applicableTotal : 100;
 
   const finalPercentage = Math.min(100, Math.round((totalEarnedScore / totalApplicableScore) * 100));
 
@@ -198,32 +199,71 @@ const calculateEmployeeScore = ({
     totalApplicableScore,
     finalPercentage,
     verifiedReferencesCount: validRefCount,
+    scoreConfig: {
+      aadhaarScore: aadhaarMax,
+      voterScore: voterMax,
+      educationScore: eduMax,
+      employmentScore: empMax,
+      referenceScorePerItem: refPerItem,
+      maxReferencesAllowed: maxRefs,
+      totalApplicableScore,
+    },
     criteria: [
-      { id: 'aadhaar', name: 'Aadhaar Card', weight: '20%', earned: aadhaarScore, max: 20, isVerified: isAadhaar },
-      { id: 'voter', name: 'Voter ID Card', weight: '20%', earned: voterScore, max: 20, isVerified: isVoter },
-      { id: 'education', name: 'Education', weight: '20%', earned: eduScore, max: 20, isVerified: isEdu },
-      { id: 'employment', name: 'Employment', weight: '30%', earned: empScore, max: 30, isVerified: isEmp },
+      { id: 'aadhaar', name: 'Aadhaar Card', weight: `${aadhaarMax}%`, earned: aadhaarScore, max: aadhaarMax, isVerified: isAadhaar },
+      { id: 'voter', name: 'Voter ID Card', weight: `${voterMax}%`, earned: voterScore, max: voterMax, isVerified: isVoter },
+      { id: 'education', name: 'Education', weight: `${eduMax}%`, earned: eduScore, max: eduMax, isVerified: isEdu },
+      { id: 'employment', name: 'Employment', weight: `${empMax}%`, earned: empScore, max: empMax, isVerified: isEmp },
       {
         id: 'reference',
         name: 'Employee Reference',
-        weight: '10% Max',
+        weight: `${refMax}% Max`,
         earned: referenceScore,
-        max: 10,
+        max: refMax,
         isVerified: validRefCount > 0,
         verifiedCount: validRefCount,
-        displayRatio: `${referenceScore}/10`,
+        displayRatio: `${referenceScore}/${refMax}`,
       },
     ],
   };
 };
 
-const calculateEmployixScore = ({ aadhaarDone, voterDone, dlDone, empDone, eduDone, verifiedReferencesCount = 0 }) => {
-  const result = calculateEmployeeScore({
+/**
+ * Calculates Employee Profile Scoring System dynamically from DB ScoreConfig table
+ *
+ * Scoring Criteria (dynamically configurable in score_configs table):
+ * 1. Aadhaar Card = 20 pts default
+ * 2. Voter ID Card = 20 pts default
+ * 3. Education = 20 pts default
+ * 4. Employment = 30 pts default
+ * 5. Employee Reference = 5 to 5 (5 pts per reference, max 2 references = 10 pts default)
+ * Total = 100 pts
+ */
+const calculateEmployeeScore = async (params = {}) => {
+  const config = params?.config || (await ScoreConfig.getActiveConfig());
+  return computeScoreBreakdown(params, config);
+};
+
+const calculateEmployeeScoreSync = (params = {}, customConfig = null) => {
+  const config = customConfig || ScoreConfig.getCachedConfig();
+  return computeScoreBreakdown(params, config);
+};
+
+const calculateEmployixScore = async ({
+  aadhaarDone,
+  voterDone,
+  dlDone,
+  empDone,
+  eduDone,
+  verifiedReferencesCount = 0,
+  config = null,
+} = {}) => {
+  const result = await calculateEmployeeScore({
     aadhaarDone,
     voterDone,
     eduDone,
     empDone,
     verifiedReferencesCount,
+    config,
   });
   return result.finalPercentage;
 };
@@ -251,6 +291,8 @@ module.exports = {
   getGatewayHeaders,
   resolveErrorInfo,
   calculateEmployeeScore,
+  calculateEmployeeScoreSync,
+  computeScoreBreakdown,
   calculateEmployixScore,
   calculateKycStatus,
   hashToken

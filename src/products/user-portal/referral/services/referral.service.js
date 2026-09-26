@@ -169,6 +169,36 @@ const getUserReferences = async (referrerId) => {
 };
 
 /**
+ * Universal lookup helper for verification tokens.
+ * Matches current tokenHash, current rawToken, or any token from previousTokens array,
+ * handling whitespace, quotes, and pre-hashed tokens gracefully.
+ */
+const findReferralByToken = async (rawToken, populateOptions = null) => {
+  if (!rawToken) return null;
+  const clean = String(rawToken).trim().replace(/^["']|["']$/g, '');
+  if (!clean) return null;
+
+  const hashed = hashToken(clean);
+
+  const queryCondition = {
+    $or: [
+      { tokenHash: hashed },
+      { tokenHash: clean },
+      { rawToken: clean },
+      { 'previousTokens.tokenHash': hashed },
+      { 'previousTokens.tokenHash': clean },
+      { 'previousTokens.rawToken': clean },
+    ],
+  };
+
+  let query = Referral.findOne(queryCondition);
+  if (populateOptions) {
+    query = query.populate(populateOptions);
+  }
+  return await query;
+};
+
+/**
  * 3. Resend invitation email via Worker Thread
  */
 const resendReferenceInvitation = async (referrerId, referenceId) => {
@@ -181,6 +211,20 @@ const resendReferenceInvitation = async (referrerId, referenceId) => {
 
   if (referral.isFeedbackSubmitted || referral.status === 'completed') {
     throw new Error('This reference has already been completed.');
+  }
+
+  // Preserve existing token in previousTokens so old links keep working
+  if (referral.rawToken && referral.tokenHash) {
+    if (!Array.isArray(referral.previousTokens)) {
+      referral.previousTokens = [];
+    }
+    if (!referral.previousTokens.some((pt) => pt.tokenHash === referral.tokenHash)) {
+      referral.previousTokens.push({
+        tokenHash: referral.tokenHash,
+        rawToken: referral.rawToken,
+        createdAt: new Date(),
+      });
+    }
   }
 
   // Generate fresh token
@@ -225,6 +269,16 @@ const getReferenceShareLink = async (referrerId, referenceId) => {
 
   let rawToken = referral.rawToken;
   if (!rawToken || referral.tokenExpiry < new Date()) {
+    if (referral.rawToken && referral.tokenHash) {
+      if (!Array.isArray(referral.previousTokens)) {
+        referral.previousTokens = [];
+      }
+      referral.previousTokens.push({
+        tokenHash: referral.tokenHash,
+        rawToken: referral.rawToken,
+        createdAt: new Date(),
+      });
+    }
     rawToken = crypto.randomBytes(32).toString('hex');
     referral.rawToken = rawToken;
     referral.tokenHash = hashToken(rawToken);
@@ -249,8 +303,10 @@ const validateVerificationToken = async (rawToken) => {
     throw new Error('Verification token is required.');
   }
 
-  const tokenHash = hashToken(rawToken);
-  const referral = await Referral.findOne({ tokenHash }).populate('referrerId', 'name designation');
+  const referral = await findReferralByToken(rawToken, {
+    path: 'referrerId',
+    select: 'name designation',
+  });
 
   if (!referral) {
     throw new Error('Invalid verification link. Please request a new invitation.');
@@ -294,8 +350,10 @@ const sendRefereeEmailOtp = async (rawToken) => {
     throw new Error('Verification token is required.');
   }
 
-  const tokenHash = hashToken(rawToken);
-  const referral = await Referral.findOne({ tokenHash }).populate('referrerId', 'name');
+  const referral = await findReferralByToken(rawToken, {
+    path: 'referrerId',
+    select: 'name',
+  });
 
   if (!referral) {
     throw new Error('Invalid or expired verification link.');
@@ -309,11 +367,18 @@ const sendRefereeEmailOtp = async (rawToken) => {
     throw new Error('This verification link has expired.');
   }
 
+  // Prevent multiple OTP sends on rapid keypress or multiple clicks (30 seconds cooldown)
+  if (referral.lastOtpSentAt && Date.now() - new Date(referral.lastOtpSentAt).getTime() < 30000) {
+    const remainingSecs = Math.ceil((30000 - (Date.now() - new Date(referral.lastOtpSentAt).getTime())) / 1000);
+    throw new Error(`OTP already sent. Please wait ${remainingSecs}s before requesting a new code.`);
+  }
+
   // Generate 6-digit OTP
   const otpCode = crypto.randomInt(100000, 999999).toString();
   referral.otpHash = hashToken(otpCode);
   referral.otpExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
   referral.otpAttempts = 0;
+  referral.lastOtpSentAt = new Date();
   await referral.save();
 
   dispatchEmailWorker({
@@ -343,8 +408,7 @@ const verifyRefereeEmailOtp = async (rawToken, otpCode) => {
     throw new Error('Please enter a valid 6-digit OTP.');
   }
 
-  const tokenHash = hashToken(rawToken);
-  const referral = await Referral.findOne({ tokenHash });
+  const referral = await findReferralByToken(rawToken);
 
   if (!referral) {
     throw new Error('Invalid verification session.');
@@ -421,8 +485,10 @@ const submitRefereeFeedback = async (
     throw new Error('Verification token is required.');
   }
 
-  const tokenHash = hashToken(rawToken);
-  const referral = await Referral.findOne({ tokenHash }).populate('referrerId', 'name email rewardPoints');
+  const referral = await findReferralByToken(rawToken, {
+    path: 'referrerId',
+    select: 'name email rewardPoints',
+  });
 
   if (!referral) {
     throw new Error('Invalid verification session.');

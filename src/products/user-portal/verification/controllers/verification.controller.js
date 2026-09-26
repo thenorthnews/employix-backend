@@ -28,6 +28,8 @@ const ManualEmployment = require('../../models/manualEmployment.model');
 const EmploymentVerification = require('../../models/employmentVerification.model');
 const Qualification = require('../../models/qualification.model');
 const Certification = require('../../models/certification.model');
+const Referral = require('../../models/referral.model');
+const ScoreConfig = require('../../models/scoreConfig.model');
 const {
   addQualificationService,
   getQualificationsService,
@@ -60,7 +62,7 @@ const getEducationState = async (userId) => {
 };
 
 const getFullUserKycState = async (userId) => {
-  const [currentUser, records, empRecord, manualEmpRecord, eduState] = await Promise.all([
+  const [currentUser, records, empRecord, manualEmpRecord, eduState, completedRefCount] = await Promise.all([
     User.findById(userId),
     Identification.find({
       userId,
@@ -72,6 +74,10 @@ const getFullUserKycState = async (userId) => {
     }),
     ManualEmployment.findOne({ userId }),
     getEducationState(userId),
+    Referral.countDocuments({
+      referrerId: userId,
+      $or: [{ isFeedbackSubmitted: true }, { status: 'completed' }, { isPointsAwarded: true }],
+    }),
   ]);
 
   const aadhaarDone = currentUser?.aadhaarStatus === 1 || records.some((r) => r.documentType === 'aadhaar' && r.verificationStatus === 'verified');
@@ -88,12 +94,13 @@ const getFullUserKycState = async (userId) => {
     eduDone: educationDone,
   });
 
-  const newScore = calculateEmployixScore({
+  const newScore = await calculateEmployixScore({
     aadhaarDone,
     voterDone,
     dlDone,
     empDone: employmentDone,
     eduDone: eduState.eduVerified,
+    verifiedReferencesCount: completedRefCount,
   });
 
   return {
@@ -201,12 +208,18 @@ const verifyAadhaarDocument = async (req, res) => {
       empDone: currentEmpStatus === 1,
       eduDone: hasEdu,
     });
-    const newScore = calculateEmployixScore({
+    const scoreCfg = await ScoreConfig.getActiveConfig();
+    const completedRefCount = await Referral.countDocuments({
+      referrerId: userId,
+      $or: [{ isFeedbackSubmitted: true }, { status: 'completed' }, { isPointsAwarded: true }],
+    });
+    const newScore = await calculateEmployixScore({
       aadhaarDone: true,
       voterDone: currentVoterStatus === 1,
       dlDone: currentDlStatus === 1,
       empDone: currentEmpStatus === 1,
       eduDone: eduVerified,
+      verifiedReferencesCount: completedRefCount,
     });
 
     await User.findByIdAndUpdate(userId, {
@@ -224,7 +237,7 @@ const verifyAadhaarDocument = async (req, res) => {
         $set: {
           verificationMethod: value.documentFront ? 'ocr_scan' : 'manual_number',
           verificationStatus: 'verified',
-          scoreEarned: 20,
+          scoreEarned: scoreCfg.aadhaarScore,
           consentGiven: true,
           consentTimestamp: new Date(),
           consentPurpose: value.consentPurpose || 'Aadhaar identity verification for Employix Trust Score',
@@ -240,7 +253,7 @@ const verifyAadhaarDocument = async (req, res) => {
       {
         ...result,
         aadhaarStatus: 1,
-        scoreBoost: 20,
+        scoreBoost: scoreCfg.aadhaarScore,
         newScore,
         kycStatus: newKycState,
       },
@@ -626,12 +639,18 @@ const verifyVoterId = async (req, res) => {
       empDone: currentEmpStatus === 1,
       eduDone: hasEdu,
     });
-    const newScore = calculateEmployixScore({
+    const scoreCfg = await ScoreConfig.getActiveConfig();
+    const completedRefCount = await Referral.countDocuments({
+      referrerId: userId,
+      $or: [{ isFeedbackSubmitted: true }, { status: 'completed' }, { isPointsAwarded: true }],
+    });
+    const newScore = await calculateEmployixScore({
       aadhaarDone: currentAadhaarStatus === 1,
       voterDone: true,
       dlDone: currentDlStatus === 1,
       empDone: currentEmpStatus === 1,
       eduDone: eduVerified,
+      verifiedReferencesCount: completedRefCount,
     });
 
     await User.findByIdAndUpdate(userId, {
@@ -643,7 +662,7 @@ const verifyVoterId = async (req, res) => {
       },
     });
 
-    return success(res, { ...result, voterStatus: 1, scoreBoost: 20, newScore, kycStatus: newKycStatus }, 'Voter ID and address verified successfully');
+    return success(res, { ...result, voterStatus: 1, scoreBoost: scoreCfg.voterScore, newScore, kycStatus: newKycStatus }, 'Voter ID and address verified successfully');
   } catch (err) {
     console.log("🚀 ~ verifyVoterId ~ err:", err)
     const { statusCode, message } = resolveErrorInfo(err, 'Invalid voter id number');
@@ -736,12 +755,18 @@ const processVoterOcr = async (req, res) => {
       empDone: empState === 1,
       eduDone: hasEdu,
     });
-    const voterNewScore = calculateEmployixScore({
+    const scoreCfg = await ScoreConfig.getActiveConfig();
+    const completedRefCount = await Referral.countDocuments({
+      referrerId: userId,
+      $or: [{ isFeedbackSubmitted: true }, { status: 'completed' }, { isPointsAwarded: true }],
+    });
+    const voterNewScore = await calculateEmployixScore({
       aadhaarDone: aadhaarState === 1,
       voterDone: true,
       dlDone: dlState === 1,
       empDone: empState === 1,
       eduDone: eduVerified,
+      verifiedReferencesCount: completedRefCount,
     });
 
     await User.findByIdAndUpdate(userId, {
@@ -855,12 +880,18 @@ const getEmploymentHistory = async (req, res) => {
       empDone: true,
       eduDone: hasEdu,
     });
-    const newScore = calculateEmployixScore({
+    const scoreCfg = await ScoreConfig.getActiveConfig();
+    const completedRefCount = await Referral.countDocuments({
+      referrerId: userId,
+      $or: [{ isFeedbackSubmitted: true }, { status: 'completed' }, { isPointsAwarded: true }],
+    });
+    const newScore = await calculateEmployixScore({
       aadhaarDone,
       voterDone,
       dlDone,
       empDone: true,
       eduDone: eduVerified,
+      verifiedReferencesCount: completedRefCount,
     });
 
     await User.findByIdAndUpdate(userId, {
@@ -962,12 +993,18 @@ const getEmploymentByUan = async (req, res) => {
       empDone: true,
       eduDone: hasEdu,
     });
-    const newScore = calculateEmployixScore({
+    const scoreCfg = await ScoreConfig.getActiveConfig();
+    const completedRefCount = await Referral.countDocuments({
+      referrerId: userId,
+      $or: [{ isFeedbackSubmitted: true }, { status: 'completed' }, { isPointsAwarded: true }],
+    });
+    const newScore = await calculateEmployixScore({
       aadhaarDone,
       voterDone,
       dlDone,
       empDone: true,
       eduDone: eduVerified,
+      verifiedReferencesCount: completedRefCount,
     });
 
     await User.findByIdAndUpdate(userId, {
@@ -1058,12 +1095,18 @@ const addManualEmployment = async (req, res) => {
       empDone: true,
       eduDone: hasEdu,
     });
-    const newScore = calculateEmployixScore({
+    const scoreCfg = await ScoreConfig.getActiveConfig();
+    const completedRefCount = await Referral.countDocuments({
+      referrerId: userId,
+      $or: [{ isFeedbackSubmitted: true }, { status: 'completed' }, { isPointsAwarded: true }],
+    });
+    const newScore = await calculateEmployixScore({
       aadhaarDone,
       voterDone,
       dlDone,
       empDone: true,
       eduDone: eduVerified,
+      verifiedReferencesCount: completedRefCount,
     });
 
     await User.findByIdAndUpdate(userId, {
@@ -1185,12 +1228,18 @@ const processDlOcr = async (req, res) => {
       eduDone: hasEdu,
     });
 
-    const newScore = calculateEmployixScore({
+    const scoreCfg = await ScoreConfig.getActiveConfig();
+    const completedRefCount = await Referral.countDocuments({
+      referrerId: userId,
+      $or: [{ isFeedbackSubmitted: true }, { status: 'completed' }, { isPointsAwarded: true }],
+    });
+    const newScore = await calculateEmployixScore({
       aadhaarDone,
       voterDone,
       dlDone,
       empDone,
       eduDone: eduVerified,
+      verifiedReferencesCount: completedRefCount,
     });
 
     await User.findByIdAndUpdate(userId, {
@@ -1314,12 +1363,17 @@ const getKycStatus = async (req, res) => {
     });
     const kycState = user?.kycStatus === 8 ? 8 : computedKyc;
 
-    const currentScore = calculateEmployixScore({
+    const completedRefCount = await Referral.countDocuments({
+      referrerId: userId,
+      $or: [{ isFeedbackSubmitted: true }, { status: 'completed' }, { isPointsAwarded: true }],
+    });
+    const currentScore = await calculateEmployixScore({
       aadhaarDone,
       voterDone,
       dlDone,
       empDone: employmentDone,
       eduDone: eduVerified,
+      verifiedReferencesCount: completedRefCount,
     });
 
     // Sync DB User record

@@ -134,7 +134,7 @@ async function getCurrentUserService(userId, req = null) {
     userQualifications.some((q) => q.isVerified === true && q.verificationStatus === 'verified') ||
     userCertifications.some((c) => c.isVerified === true && c.verificationStatus === 'verified');
 
-  const scoringData = calculateEmployeeScore({
+  const scoringData = await calculateEmployeeScore({
     aadhaarDone,
     voterDone,
     eduDone: eduVerified,

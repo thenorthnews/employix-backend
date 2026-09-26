@@ -92,7 +92,7 @@ const login = async (req, res) => {
       return unauthorized(res, "Invalid credentials");
     }
 
-    return success(res, user, "Sucessfully logged in");
+    return success(res, user, "OTP sent successfully");
   } catch (err) {
     console.log("emdkemdkemdke",err)
     logger.error("Service error in login controller:", err);
@@ -102,22 +102,7 @@ const login = async (req, res) => {
 
 const resendOtp = async (req, res) => {
   try {
-    let email =
-      req.body?.email ||
-      req.query?.email ||
-      req.headers['x-user-email'] ||
-      (typeof req.body === 'string' ? req.body : null);
-
-    if (typeof email === 'string') {
-      email = email.trim().toLowerCase();
-    }
-
-    // Bulletproof fallback to active session user if not provided
-    if (!email) {
-      email = 'nehabharti430@gmail.com';
-    }
-
-    const { error, value } = resendOtpSchema.validate({ email }, {
+    const { error, value } = resendOtpSchema.validate(req.body, {
       abortEarly: false,
     });
 

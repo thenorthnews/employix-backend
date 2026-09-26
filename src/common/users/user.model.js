@@ -15,7 +15,6 @@ const UserSchema = new mongoose.Schema({
 	phoneNumber: { type: String },
 	countryCode: { type: String, default: '+91' },
 	profileImage: { type: String },
-	image: { type: String },
 	address: { type: String, default: '' },
 	city: { type: String, default: '' },
 	state: { type: String, default: '' },

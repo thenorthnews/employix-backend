@@ -12,11 +12,17 @@ const Joi  = require("joi")
     otp: Joi.string().length(6).required()
 });
 const resendOtpSchema = Joi.object({
-    email: Joi.string()
-        .email({ minDomainSegments: 2 })
-        .trim()
-        .lowercase()
-        .required()
+  email: Joi.string()
+    .email({ minDomainSegments: 2 })
+    .trim()
+    .lowercase()
+    .required()
+    .messages({
+      'string.base': 'Email must be a string',
+      'string.empty': 'Email is required to resend OTP',
+      'string.email': 'Please enter a valid email address',
+      'any.required': 'Email is required to resend OTP',
+    }),
 });
 const loginSchema = Joi.object({
     email: Joi.string().email().trim().lowercase().required(),
@@ -35,7 +41,6 @@ const updateProfileSchema = Joi.object({
   state: Joi.string().trim().allow('', null),
   pincode: Joi.string().trim().allow('', null),
   profileImage: Joi.string().allow('', null),
-  image: Joi.string().allow('', null),
 }).unknown(true);
 
 

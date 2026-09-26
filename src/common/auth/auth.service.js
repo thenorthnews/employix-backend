@@ -65,7 +65,11 @@ async function registerUser({ name, email, phone, profileImage, password = 'Empl
     }
   });
 
-  return user;
+  const safeUser = user.toObject();
+  delete safeUser.password;
+  delete safeUser.otp;
+  delete safeUser.otpExpiry;
+  return safeUser;
 }
 
 async function verifyOTP({ email, otp }) {
@@ -124,7 +128,11 @@ async function verifyOTP({ email, otp }) {
   );
 
   const token = generateToken({ id: user._id, role: user.role });
-  return { ...updatedUser.toObject(), token: token };
+  const userObj = updatedUser.toObject();
+  delete userObj.password;
+  delete userObj.otp;
+  delete userObj.otpExpiry;
+  return { ...userObj, token: token };
 }
 
 async function checkEmailPassword(email) {
@@ -175,7 +183,10 @@ async function checkEmailPassword(email) {
     }
   });
 
-  return updatedUser;
+  return {
+    email: updatedUser.email,
+    name: updatedUser.name,
+  };
 }
 
 async function resendUserOtp(email) {

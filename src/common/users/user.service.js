@@ -174,7 +174,8 @@ async function getCurrentUserService(userId, req = null) {
   }
 
   const userObj = user.toObject();
-  let resolvedProfileImage = userObj.image || userObj.profileImage || '';
+  delete userObj.image;
+  let resolvedProfileImage = userObj.profileImage || '';
   if (resolvedProfileImage && typeof resolvedProfileImage === 'string' && resolvedProfileImage.startsWith('/uploads/')) {
     const host = req ? `${req.protocol}://${req.get('host')}` : '';
     const baseUrl = (process.env.BASE_URL || host || 'http://13.232.68.44:3000').replace(/\/+$/, '');
@@ -183,7 +184,6 @@ async function getCurrentUserService(userId, req = null) {
 
   return {
     ...userObj,
-    image: resolvedProfileImage,
     profileImage: resolvedProfileImage,
     employixId,
     address: resolvedAddress,
@@ -216,19 +216,19 @@ async function updateProfileService(userId, values, file, req = null) {
   const baseUrl = (process.env.BASE_URL || host || 'http://13.232.68.44:3000').replace(/\/+$/, '');
 
   if (file) {
-    updateData.image = `${baseUrl}/uploads/profile-images/${file.filename}`;
-    updateData.profileImage = updateData.image;
-  } else {
-    let rawImg = updateData.image || updateData.profileImage;
+    updateData.profileImage = `${baseUrl}/uploads/profile-images/${file.filename}`;
+  } else if (updateData.profileImage || updateData.image) {
+    let rawImg = updateData.profileImage || updateData.image;
     if (rawImg && typeof rawImg === 'string' && rawImg.trim()) {
       rawImg = rawImg.trim();
       const finalImg = (rawImg.startsWith('http://') || rawImg.startsWith('https://'))
         ? rawImg
         : `${baseUrl}${rawImg.startsWith('/') ? rawImg : `/${rawImg}`}`;
-      updateData.image = finalImg;
       updateData.profileImage = finalImg;
     }
   }
+
+  delete updateData.image;
 
   // Remove fields that should not be overwritten
   delete updateData.profession;

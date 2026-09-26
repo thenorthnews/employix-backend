@@ -64,27 +64,55 @@ const fetchEmploymentHistoryFlow = async ({ userId, mobileNumber, candidateName 
  * Setu API: POST /api/sync/uan-to-employment-history
  */
 const fetchEmploymentByUanFlow = async ({ userId, uan, groupId, correlationId = 'N/A' }) => {
-  const cleanUan = String(uan).trim().replace(/\s+/g, '');
+  const cleanUan = String(uan).trim().replace(/\D/g, '');
   const maskedUan = `${cleanUan.slice(0, 4)}****${cleanUan.slice(-2)}`;
 
   const payload = { uan: cleanUan };
   if (groupId) payload.groupId = groupId;
 
-  // Setu UAN API Call
-  const response = await axios.post(
-    `${SETU_BASE_URL}/api/sync/uan-to-employment-history`,
-    payload,
-    {
-      headers: {
-        'content-type': 'application/json',
-        'x-client-id': SETU_CLIENT_ID,
-        'x-client-secret': SETU_CLIENT_SECRET,
-        'x-product-instance-id': SETU_PRODUCT_INSTANCE_ID,
-        'x-correlation-id': correlationId,
-      },
-      timeout: 45000,
+  let response;
+  try {
+    response = await axios.post(
+      `${SETU_BASE_URL}/api/sync/uan-to-employment-history`,
+      payload,
+      {
+        headers: {
+          'content-type': 'application/json',
+          'x-client-id': SETU_CLIENT_ID,
+          'x-client-secret': SETU_CLIENT_SECRET,
+          'x-product-instance-id': SETU_PRODUCT_INSTANCE_ID,
+          'x-correlation-id': correlationId,
+        },
+        timeout: 45000,
+      }
+    );
+  } catch (err) {
+    const rawMsg =
+      err.response?.data?.message ||
+      err.response?.data?.error?.message ||
+      err.response?.data?.error?.detail ||
+      err.response?.data?.detail ||
+      err.message;
+
+    logger.error('Setu UAN to Employment History error', {
+      correlationId,
+      userId,
+      statusCode: err.response?.status || 500,
+      error: err.response?.data || err.message,
+    });
+
+    let friendlyMsg = 'Invalid UAN number. Please enter a valid 12-digit UAN number.';
+    const lower = String(rawMsg || '').toLowerCase();
+    if (lower.includes('no records') || lower.includes('not found')) {
+      friendlyMsg = 'No EPFO employment records found for this UAN. Please enter a valid registered UAN or add employment manually.';
+    } else if (rawMsg && !lower.includes('bad request') && !lower.includes('error') && !lower.includes('failed')) {
+      friendlyMsg = rawMsg;
     }
-  );
+
+    const error = new Error(friendlyMsg);
+    error.statusCode = err.response?.status && err.response.status < 500 ? err.response.status : 400;
+    throw error;
+  }
 
   const rawList = response.data?.data || [];
   let verificationStatus = rawList.length === 0 ? 'NOT_FOUND' : 'VERIFIED';

@@ -921,11 +921,32 @@ const getEmploymentByUan = async (req, res) => {
     if (!userId) return badRequest(res, 'User authentication required');
 
     const { uan, groupId } = req.body;
-    if (!uan || !/^\d{12}$/.test(String(uan).trim())) {
-      return badRequest(res, 'Please provide a valid 12-digit UAN number.');
+    const cleanUan = String(uan || '').trim().replace(/\D/g, '');
+
+    if (!cleanUan) {
+      return badRequest(res, 'Please provide your 12-digit UAN number.');
+    }
+    if (cleanUan.length !== 12) {
+      return badRequest(res, 'Invalid UAN number. UAN must be exactly 12 digits.');
+    }
+    if (cleanUan.startsWith('0')) {
+      return badRequest(res, 'Invalid UAN number. UAN cannot start with 0.');
+    }
+    if (/^(\d)\1{11}$/.test(cleanUan)) {
+      return badRequest(res, 'Invalid UAN number. Repeating digits sequence is not allowed.');
+    }
+    if (cleanUan === '123456789012' || cleanUan === '234567890123') {
+      return badRequest(res, 'Invalid UAN number. Sequential dummy numbers are not allowed.');
     }
 
-    const result = await fetchEmploymentByUanFlow({ userId, uan, groupId, correlationId });
+    const result = await fetchEmploymentByUanFlow({ userId, uan: cleanUan, groupId, correlationId });
+
+    if (!result || result.totalRecordsFound === 0 || !result.records || result.records.length === 0) {
+      return badRequest(
+        res,
+        'No EPFO employment records found for this UAN. Please enter a valid registered UAN or add employment manually.'
+      );
+    }
 
     // Mark employment verified & update 7-step score (Employment = 35 pts)
     const currentUser = await User.findById(userId);
@@ -964,7 +985,7 @@ const getEmploymentByUan = async (req, res) => {
       endpoint: req.originalUrl,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
-      details: { maskedUan: `${uan.slice(0, 4)}****${uan.slice(-2)}`, recordsFound: result.totalRecordsFound },
+      details: { maskedUan: `${cleanUan.slice(0, 4)}****${cleanUan.slice(-2)}`, recordsFound: result.totalRecordsFound },
     });
 
     logger.info('Employment history via UAN fetched', { correlationId, userId, totalRecords: result.totalRecordsFound });
@@ -974,13 +995,32 @@ const getEmploymentByUan = async (req, res) => {
       { ...result.toObject(), employmentStatus: 1, kycStatus: newKycState, employixScore: newScore },
       'Employment history fetched via UAN successfully'
     );
-  } catch (err) {
-    console.log("🚀 ~ getEmploymentByUan ~ err:", err)
-    
+  } catch (err) {    
     const { statusCode, message } = resolveErrorInfo(err, 'Failed to fetch employment history via UAN');
     logger.error('UAN employment fetch failed', { correlationId, userId, statusCode, error: message, gateway: err.response?.data || null });
-    if (statusCode >= 400 && statusCode < 500) return badRequest(res, "Please Enter Valide UAN Number");
-    return serverError(res, message);
+
+    let friendlyMessage = message;
+    const lower = String(message || '').toLowerCase();
+    if (
+      lower.includes('bad request') ||
+      lower.includes('not found') ||
+      lower.includes('invalid') ||
+      lower.includes('failed to fetch') ||
+      lower.includes('no records') ||
+      lower.includes('resource_not_found') ||
+      lower.includes('uan')
+    ) {
+      if (lower.includes('no records')) {
+        friendlyMessage = 'No EPFO employment records found for this UAN. Please enter a valid registered UAN or add employment manually.';
+      } else {
+        friendlyMessage = 'Invalid UAN number. Please enter a valid 12-digit UAN number.';
+      }
+    }
+
+    if (statusCode >= 400 && statusCode < 500) {
+      return badRequest(res, friendlyMessage);
+    }
+    return serverError(res, friendlyMessage);
   }
 };
 
@@ -1095,10 +1135,14 @@ const processDlOcr = async (req, res) => {
     }
 
     const frontFile = req.files?.documentFront?.[0];
-    const backFile = req.files?.documentBack?.[0] || null;
+    const backFile = req.files?.documentBack?.[0];
 
     if (!frontFile) {
       return badRequest(res, 'Front side image of Driving License (documentFront) is mandatory');
+    }
+
+    if (!backFile) {
+      return badRequest(res, 'Back side image of Driving License (documentBack) is mandatory');
     }
 
     const result = await extractDlOcrData({
@@ -1199,7 +1243,7 @@ const processDlOcr = async (req, res) => {
     });
 
     if (statusCode >= 400 && statusCode < 500) {
-      return badRequest(res,"Please upload a clear and valid Driving License image" );
+      return badRequest(res, message);
     }
 
     return serverError(res, message);
@@ -1342,6 +1386,9 @@ const getKycStatus = async (req, res) => {
           ? {
               maskedDocumentNumber: aadhaarRecord.maskedDocumentNumber,
               name: aadhaarRecord.name,
+              dob: aadhaarRecord.dob,
+              gender: aadhaarRecord.gender,
+              address: aadhaarRecord.address,
               verificationMethod: aadhaarRecord.verificationMethod || 'ocr_scan',
               scoreEarned: aadhaarRecord.scoreEarned || 20,
               verifiedAt: aadhaarRecord.verifiedAt,
@@ -1351,8 +1398,11 @@ const getKycStatus = async (req, res) => {
           ? {
               maskedDocumentNumber: voterRecord.maskedDocumentNumber || 'WXD1****92',
               name: voterRecord.name,
+              dob: voterRecord.dob,
+              age: voterRecord.age,
+              gender: voterRecord.gender,
               address: voterRecord.address,
-              verificationMethod: voterRecord.verificationMethod || 'manual_number',
+              verificationMethod: voterRecord.verificationMethod || 'ocr_scan',
               scoreEarned: 20,
               verifiedAt: voterRecord.verifiedAt,
             }

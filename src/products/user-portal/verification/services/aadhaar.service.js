@@ -12,6 +12,7 @@ const {
   standardizeGender,
   generateSafeGroupId,
 } = require('../../../../helpers/documentHelper');
+const { validateDocumentConsistency } = require('../../../../helpers/documentClassifier');
 const logger = require('../../../../utils/logger');
 
 const bufferToStream = (buffer) => {
@@ -74,13 +75,33 @@ const extractAadhaarOcr = async ({ frontFile, documentFront, backFile, documentB
 
     return response.data;
   } catch (error) {
+    const rawMsg =
+      error.response?.data?.message ||
+      error.response?.data?.error?.message ||
+      (typeof error.response?.data?.error === 'string' ? error.response.data.error : null) ||
+      error.message;
+
     logger.error('Setu Aadhaar OCR Gateway error', {
       correlationId,
       groupId,
       statusCode: error.response?.status || 500,
       gatewayResponse: error.response?.data || error.message,
     });
-    throw error;
+
+    let friendlyMsg = rawMsg;
+    const lower = String(rawMsg).toLowerCase();
+    if (
+      lower.includes('non compliant') ||
+      lower.includes('quality standard') ||
+      lower.includes('not compliant') ||
+      lower.includes('document_quality')
+    ) {
+      friendlyMsg = 'Uploaded document is not a valid Aadhaar card. Please upload a clear photo of your original Aadhaar card (Front & Back).';
+    }
+
+    const err = new Error(friendlyMsg || 'Invalid Aadhaar card. Please upload a valid Aadhaar card.');
+    err.statusCode = 400;
+    throw err;
   }
 };
 
@@ -155,6 +176,24 @@ const processAadhaarVerificationFlow = async ({
 }) => {
   const actualFront = frontFile || (Array.isArray(documentFront) ? documentFront[0] : documentFront);
   const actualBack = backFile || (Array.isArray(documentBack) ? documentBack[0] : documentBack);
+
+  if (!actualFront || !actualFront.buffer) {
+    const error = new Error('Please upload a valid Aadhaar card (Front side). Only Aadhaar card is accepted.');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (!actualBack || !actualBack.buffer) {
+    const error = new Error('Please upload a valid Aadhaar card (Back side). Only Aadhaar card is accepted.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Pre-validate that uploaded images match Aadhaar
+  await validateDocumentConsistency({
+    expectedType: 'aadhaar',
+    frontBuffer: actualFront.buffer,
+    backBuffer: actualBack.buffer,
+  });
 
   const existingRecord = await Identification.findOne(
     { userId, groupId: { $exists: true, $ne: null } },

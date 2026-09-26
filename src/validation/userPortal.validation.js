@@ -137,11 +137,39 @@ const employmentHistorySchema = Joi.object({
     }),
 }).unknown(false);
 
+const uanVerificationSchema = Joi.object({
+  uan: Joi.string()
+    .trim()
+    .pattern(/^[1-9]\d{11}$/)
+    .custom((value, helpers) => {
+      if (/^(\d)\1{11}$/.test(value)) {
+        return helpers.error('uan.repeating');
+      }
+      if (value === '123456789012' || value === '234567890123') {
+        return helpers.error('uan.sequential');
+      }
+      return value;
+    })
+    .required()
+    .messages({
+      'string.pattern.base': 'Please enter a valid 12-digit UAN number (cannot start with 0)',
+      'uan.repeating': 'Invalid UAN number. Repeating digits sequence is not allowed',
+      'uan.sequential': 'Invalid UAN number. Sequential dummy numbers are not allowed',
+      'any.required': '12-digit UAN number is required',
+    }),
+
+  groupId: Joi.string()
+    .trim()
+    .max(32)
+    .pattern(/^[a-zA-Z0-9_.-]+$/)
+    .optional(),
+}).unknown(false);
+
 module.exports = {
   aadhaarVerificationSchema,
   panVerificationSchema,
   panVerificationOcrSchema,
   voterIdVerificationSchema,
-  employmentHistorySchema
-
+  employmentHistorySchema,
+  uanVerificationSchema,
 };

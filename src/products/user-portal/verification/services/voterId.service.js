@@ -11,6 +11,7 @@ const {
   maskVoterId,
   getGatewayHeaders,
 } = require('../../../../helpers/documentHelper');
+const { validateDocumentConsistency } = require('../../../../helpers/documentClassifier');
 
 const bufferToStream = (buffer) => Readable.from(buffer);
 
@@ -152,10 +153,23 @@ const extractVoterOcrData = async ({ userId, frontFile, backFile, consentPurpose
   const actualBack = Array.isArray(backFile) ? backFile[0] : backFile;
 
   if (!actualFront || !actualFront.buffer) {
-    const err = new Error('Front side image of Voter ID is required');
+    const err = new Error('Please upload a valid Voter ID card (Front side). Only Voter ID card is accepted.');
     err.statusCode = 400;
     throw err;
   }
+
+  if (!actualBack || !actualBack.buffer) {
+    const err = new Error('Please upload a valid Voter ID card (Back side). Only Voter ID card is accepted.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  // Pre-validate that uploaded images match Voter ID and not Aadhaar/PAN/DL/baby photos
+  await validateDocumentConsistency({
+    expectedType: 'voter_id',
+    frontBuffer: actualFront.buffer,
+    backBuffer: actualBack.buffer,
+  });
 
   const existingRecord = await Identification.findOne(
     { userId, groupId: { $exists: true, $ne: null } },
@@ -299,10 +313,20 @@ const extractVoterOcrData = async ({ userId, frontFile, backFile, consentPurpose
       error: error.response?.data || error.message,
     });
 
-    if (dynamicMsg) {
-      error.message = dynamicMsg;
+    let friendlyMsg = dynamicMsg;
+    const lower = String(dynamicMsg).toLowerCase();
+    if (
+      lower.includes('non compliant') ||
+      lower.includes('quality standard') ||
+      lower.includes('not compliant') ||
+      lower.includes('document_quality')
+    ) {
+      friendlyMsg = 'Uploaded document is not a valid Voter ID card. Please upload a clear photo of your original Voter ID card (Front & Back).';
     }
-    throw error;
+
+    const err = new Error(friendlyMsg || 'Invalid Voter ID card. Please upload a valid Voter ID card.');
+    err.statusCode = error.statusCode && error.statusCode < 500 ? error.statusCode : 400;
+    throw err;
   }
 };
 

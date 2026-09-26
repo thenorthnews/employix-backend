@@ -107,12 +107,35 @@ const resolveErrorInfo = (err, defaultMessage) => {
     (typeof err.response?.data === 'string' && err.response.data.length < 300 ? err.response.data : null) ||
     err.message;
 
-  const message =
+  let message =
     typeof rawMessage === 'string' && rawMessage.trim().length > 0
       ? rawMessage
       : defaultMessage;
 
-  return { statusCode, message };
+  const lowerMsg = String(message).toLowerCase();
+  const lowerDef = String(defaultMessage || '').toLowerCase();
+  if (
+    lowerMsg.includes('non compliant') ||
+    lowerMsg.includes('quality standard') ||
+    lowerMsg.includes('not compliant') ||
+    lowerMsg.includes('document_quality')
+  ) {
+    if (lowerDef.includes('driving license') || lowerDef.includes('dl')) {
+      if (lowerMsg.includes('front') || lowerMsg.includes('documentfront')) {
+        message = 'Please upload a valid Driving License (Front side). Only Driving License is accepted.';
+      } else if (lowerMsg.includes('back') || lowerMsg.includes('documentback')) {
+        message = 'Please upload a valid Driving License (Back side). Only Driving License is accepted.';
+      } else {
+        message = 'Uploaded document is not a valid Driving License. Please upload a clear photo of your original Driving License (Front & Back).';
+      }
+    } else if (lowerDef.includes('voter')) {
+      message = 'Uploaded document is not a valid Voter ID card. Please upload a clear photo of your original Voter ID card (Front & Back).';
+    } else {
+      message = 'Uploaded document is not a valid Aadhaar card. Please upload a clear photo of your original Aadhaar card (Front & Back).';
+    }
+  }
+
+  return { statusCode: statusCode === 500 && (lowerMsg.includes('compliant') || lowerMsg.includes('quality')) ? 400 : statusCode, message };
 };
 /**
  * Calculates Employee Profile Scoring System (100% Base Maximum)

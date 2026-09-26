@@ -5,6 +5,7 @@
 # 1. Dependencies (Always install fresh on server with `npm install`)
 node_modules/
 package-lock.json.backup
+*.traineddata
 
 # 2. Local Environment Credentials & Secrets (NEVER PUSH - SENSITIVE)
 .env

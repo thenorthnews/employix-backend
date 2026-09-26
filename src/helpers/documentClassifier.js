@@ -1,115 +1,542 @@
+const crypto = require('crypto');
+const zlib = require('zlib');
 const Tesseract = require('tesseract.js');
+const pdfParse = require('pdf-parse');
 const logger = require('../utils/logger');
 
 /**
- * Perform local OCR text recognition on an image buffer
+ * Check if buffer is a PDF document (starts with %PDF or has %PDF header)
+ */
+function isPdfBuffer(buffer) {
+  if (!buffer || !Buffer.isBuffer(buffer) || buffer.length < 4) return false;
+  const header = buffer.slice(0, Math.min(buffer.length, 1024)).toString('latin1');
+  return header.includes('%PDF');
+}
+
+/**
+ * Extract embedded JPEG images from a scanned PDF buffer
+ * Accurately parses stream ... endstream PDF blocks and extracts full, untruncated JPEG images
+ */
+function extractImagesFromPdfBuffer(pdfBuffer) {
+  if (!pdfBuffer || !Buffer.isBuffer(pdfBuffer)) return [];
+
+  const images = [];
+  const streamMarker = Buffer.from('stream');
+  const endStreamMarker = Buffer.from('endstream');
+  const jpegHeader = Buffer.from([0xFF, 0xD8, 0xFF]);
+  const jpegFooter = Buffer.from([0xFF, 0xD9]);
+
+  // Strategy 1: PDF Stream boundary extraction (Most accurate for standard PDF documents)
+  let searchIndex = 0;
+  while (searchIndex < pdfBuffer.length && images.length < 5) {
+    const streamIndex = pdfBuffer.indexOf(streamMarker, searchIndex);
+    if (streamIndex === -1) break;
+
+    let dataStart = streamIndex + streamMarker.length;
+    // Skip \r, \n, spaces after "stream"
+    while (
+      dataStart < pdfBuffer.length &&
+      (pdfBuffer[dataStart] === 0x0D || pdfBuffer[dataStart] === 0x0A || pdfBuffer[dataStart] === 0x20)
+    ) {
+      dataStart++;
+    }
+
+    const endStreamIndex = pdfBuffer.indexOf(endStreamMarker, dataStart);
+    if (endStreamIndex === -1) break;
+
+    const streamChunk = pdfBuffer.slice(dataStart, endStreamIndex);
+    const jpegStart = streamChunk.indexOf(jpegHeader);
+    if (jpegStart !== -1) {
+      const lastJpegEnd = streamChunk.lastIndexOf(jpegFooter);
+      if (lastJpegEnd !== -1 && lastJpegEnd > jpegStart) {
+        const fullImg = streamChunk.slice(jpegStart, lastJpegEnd + 2);
+        // Valid photo inside PDF is at least 3KB
+        if (fullImg.length > 3000) {
+          images.push(fullImg);
+        }
+      }
+    }
+
+    searchIndex = endStreamIndex + endStreamMarker.length;
+  }
+
+  // Strategy 2: Raw byte scanning fallback if stream boundaries were not isolated
+  if (images.length === 0) {
+    let rawIndex = 0;
+    while (rawIndex < pdfBuffer.length && images.length < 3) {
+      const startIndex = pdfBuffer.indexOf(jpegHeader, rawIndex);
+      if (startIndex === -1) break;
+
+      const nextHeader = pdfBuffer.indexOf(jpegHeader, startIndex + 3);
+      const searchLimit =
+        nextHeader !== -1 ? nextHeader : Math.min(pdfBuffer.length, startIndex + 8 * 1024 * 1024);
+      const sub = pdfBuffer.slice(startIndex, searchLimit);
+      const lastFooter = sub.lastIndexOf(jpegFooter);
+
+      if (lastFooter !== -1 && lastFooter > 3000) {
+        images.push(sub.slice(0, lastFooter + 2));
+      }
+      rawIndex = searchLimit;
+    }
+  }
+
+  return images;
+}
+
+/**
+ * Fast and accurate scanning of PDF binary buffer for document signatures (DL, PAN, Voter, Aadhaar)
+ */
+function scanPdfBufferForSignatures(buffer) {
+  if (!buffer || !Buffer.isBuffer(buffer)) return {};
+  const str = buffer.toString('latin1').toLowerCase();
+
+  const hasDl =
+    (str.includes('driving') && (str.includes('licen') || str.includes('licenc') || str.includes('rto'))) ||
+    str.includes('union of india') ||
+    str.includes('class of vehicle') ||
+    str.includes('transport department') ||
+    str.includes('motor vehicles act');
+
+  const hasPan =
+    str.includes('income tax department') ||
+    str.includes('permanent account number') ||
+    /\b[a-z]{5}\d{4}[a-z]\b/i.test(str);
+
+  const hasVoter =
+    str.includes('election commission') ||
+    str.includes('elector photo identity') ||
+    str.includes('निर्वाचन आयोग') ||
+    str.includes('मतदाता पहचान') ||
+    /\b[a-z]{3}\d{7}\b/i.test(str);
+
+  const hasAadhaar =
+    str.includes('aadhaar') ||
+    str.includes('aadhar') ||
+    str.includes('uidai') ||
+    str.includes('मेरा आधार') ||
+    str.includes('meri pehchan') ||
+    str.includes('unique identification');
+
+  return { hasDl, hasPan, hasVoter, hasAadhaar };
+}
+
+/**
+ * Text extraction from PDF:
+ * 1. Digital text via pdf-parse
+ * 2. Decompressed PDF FlateDecode page streams via zlib (words only)
+ * 3. OCR on embedded images (scanned PDFs)
+ */
+async function extractTextFromPdf(buffer) {
+  let combinedText = '';
+
+  // 1. Digital text via pdf-parse
+  try {
+    const pdfData = await pdfParse(buffer);
+    const parsedText = (pdfData?.text || '').trim().toLowerCase();
+    if (parsedText.length > 0) {
+      combinedText += ' ' + parsedText;
+    }
+  } catch (pdfErr) {
+    // Ignore invalid stream or damaged structure in scanned PDFs
+  }
+
+  // 2. Extract and decompress FlateDecode streams in PDF (Page content, text objects)
+  try {
+    const streamMarker = Buffer.from('stream');
+    const endStreamMarker = Buffer.from('endstream');
+    let searchIndex = 0;
+
+    while (searchIndex < buffer.length && combinedText.length < 5000) {
+      const sIdx = buffer.indexOf(streamMarker, searchIndex);
+      if (sIdx === -1) break;
+
+      let dStart = sIdx + streamMarker.length;
+      while (
+        dStart < buffer.length &&
+        (buffer[dStart] === 0x0D || buffer[dStart] === 0x0A || buffer[dStart] === 0x20)
+      ) {
+        dStart++;
+      }
+
+      const eIdx = buffer.indexOf(endStreamMarker, dStart);
+      if (eIdx === -1) break;
+
+      const chunk = buffer.slice(dStart, eIdx);
+      try {
+        const decompressed = zlib.inflateSync(chunk);
+        const decStr = decompressed.toString('utf8');
+        // Extract real printable words only (exclude raw binary symbols)
+        const words = decStr.match(/[a-zA-Z\u0900-\u097F]{3,}/g);
+        if (words && words.length > 0) {
+          combinedText += ' ' + words.join(' ').toLowerCase();
+        }
+      } catch {
+        // Not a zlib compressed stream, skip
+      }
+
+      searchIndex = eIdx + endStreamMarker.length;
+    }
+  } catch {}
+
+  // 3. Try OCR on embedded images if present (Scanned PDF)
+  try {
+    const embeddedImages = extractImagesFromPdfBuffer(buffer);
+    if (embeddedImages.length > 0) {
+      const { data: { text: ocrText } } = await Tesseract.recognize(embeddedImages[0], 'eng');
+      if (ocrText) {
+        combinedText += ' ' + ocrText.toLowerCase();
+      }
+    }
+  } catch (imgErr) {
+    logger.warn('Failed to OCR embedded image from scanned PDF', { error: imgErr.message });
+  }
+
+  return combinedText.trim();
+}
+
+/**
+ * Perform local text extraction on an image or PDF buffer
+ * - Digital & scanned PDF: extracted via pdf-parse, zlib stream decompression, and OCR
+ * - Images (PNG/JPEG/WEBP): extracted directly via Tesseract OCR
  */
 async function recognizeText(buffer) {
   if (!buffer || !Buffer.isBuffer(buffer)) return '';
+
+  // 1. If buffer is a PDF
+  if (isPdfBuffer(buffer)) {
+    return await extractTextFromPdf(buffer);
+  }
+
+  // 2. If buffer is an image (PNG/JPEG/WEBP), use Tesseract with safe error handling
   try {
     const { data: { text } } = await Tesseract.recognize(buffer, 'eng');
     return (text || '').toLowerCase();
   } catch (err) {
-    logger.warn('Local OCR text extraction failed', { error: err.message });
+    logger.warn('Local OCR image text extraction failed', { error: err.message });
     return '';
   }
 }
 
-/**
- * Check if text contains explicit Aadhaar card keywords
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// AADHAAR CARD HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
  * Check if text contains explicit Aadhaar card keywords / patterns
  */
 function isAadhaarDocument(text) {
   if (!text) return false;
   const t = text.toLowerCase();
-  
-  // Specific Aadhaar text indicators
+  const normalized = t.replace(/\s+/g, ' ');
+
   const hasAadhaarKeyword =
     t.includes('aadhaar') ||
     t.includes('aadhar') ||
     t.includes('adhar') ||
     t.includes('adhaar') ||
     t.includes('uidai') ||
-    t.includes('unique identification') ||
-    t.includes('authority of india') ||
+    t.includes('eaadhaar') ||
+    t.includes('e-aadhaar') ||
+    normalized.includes('unique identification authority') ||
+    normalized.includes('unique identification') ||
+    (t.includes('unique') && t.includes('identification')) ||
+    normalized.includes('authority of india') ||
     t.includes('mera aadhaar') ||
     t.includes('meri pehchan') ||
-    t.includes('pehchan') ||
     t.includes('help@uidai') ||
-    t.includes('government of india') ||
-    t.includes('govt of india') ||
-    t.includes('enrolment') ||
-    t.includes('enrollment') ||
-    t.includes('1947') ||
     t.includes('आधार') ||
-    t.includes('पहचान') ||
-    t.includes('સરકાર') ||
-    t.includes('ઓળખ');
+    t.includes('मेरा आधार') ||
+    t.includes('मेरी पहचान') ||
+    t.includes('विशिष्ट पहचान') ||
+    (t.includes('1947') && (t.includes('uidai') || t.includes('help') || t.includes('toll')));
 
-  // Format: 12 digits like "6645 2642 1992"
-  const has12DigitPattern = /\b\d{4}\s\d{4}\s\d{4}\b/.test(t);
+  // Format: 12 digits like "6645 2642 1992" or "664526421992", masked "XXXX XXXX 1992", or 16-digit VID
+  const has12DigitPattern =
+    /\b\d{4}\s\d{4}\s\d{4}\b/.test(t) ||
+    /\b\d{12}\b/.test(t) ||
+    /[xX\*\.]{4}\s?[xX\*\.]{4}\s?\d{4}/.test(t) ||
+    /\b\d{4}\s\d{4}\s\d{4}\s\d{4}\b/.test(t);
 
-  // Common Aadhaar card fields
+  // Government of India + Aadhaar specific fields
   const hasAadhaarFields =
-    (t.includes('dob') || t.includes('birth') || t.includes('yob')) &&
-    (t.includes('male') || t.includes('female'));
+    (t.includes('government of india') || t.includes('govt of india') || t.includes('भारत सरकार')) &&
+    (t.includes('enrolment') ||
+      t.includes('enrollment') ||
+      t.includes('नामांकन') ||
+      t.includes('vid') ||
+      ((t.includes('dob') || t.includes('yob') || t.includes('birth') || t.includes('जन्म')) &&
+        (t.includes('male') || t.includes('female') || t.includes('पुरुष') || t.includes('महिला'))));
 
-  return hasAadhaarKeyword || has12DigitPattern || hasAadhaarFields;
+  return Boolean(hasAadhaarKeyword || has12DigitPattern || hasAadhaarFields);
 }
 
 /**
- * Check if text contains explicit Voter ID card keywords
+ * Check if text specifically belongs to Aadhaar Front side
+ */
+function isAadhaarFrontDocument(text) {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  const normalized = t.replace(/\s+/g, ' ');
+
+  const hasAadhaarWord =
+    t.includes('aadhaar') ||
+    t.includes('aadhar') ||
+    t.includes('adhar') ||
+    t.includes('uidai') ||
+    normalized.includes('unique identification') ||
+    (t.includes('unique') && t.includes('identification')) ||
+    t.includes('आधार') ||
+    t.includes('mera aadhaar') ||
+    t.includes('meri pehchan') ||
+    t.includes('मेरा आधार') ||
+    t.includes('मेरी पहचान');
+
+  const has12Digits =
+    /\b\d{4}\s\d{4}\s\d{4}\b/.test(t) ||
+    /\b\d{12}\b/.test(t) ||
+    /[xX\*\.]{4}\s?[xX\*\.]{4}\s?\d{4}/.test(t) ||
+    /\b\d{4}\s\d{4}\s\d{4}\s\d{4}\b/.test(t);
+
+  const hasDobOrYob =
+    t.includes('dob') ||
+    t.includes('birth') ||
+    t.includes('yob') ||
+    t.includes('जन्म') ||
+    /\b(0[1-9]|[12][0-9]|3[01])[\/\-\.](0[1-9]|1[012])[\/\-\.](19|20)\d\d\b/.test(t);
+
+  const hasGender =
+    t.includes('male') ||
+    t.includes('female') ||
+    t.includes('transgender') ||
+    t.includes('पुरुष') ||
+    t.includes('महिला');
+
+  const hasAddress = t.includes('address') || t.includes('पता');
+  const hasUidaiHelp = t.includes('help@uidai') || t.includes('1947');
+
+  // If text is purely back side (address + helpdesk without DOB / gender / 12-digit)
+  if (hasAddress && hasUidaiHelp && !hasDobOrYob && !hasGender && !has12Digits) {
+    return false;
+  }
+
+  return (hasAadhaarWord || has12Digits) && (hasDobOrYob || hasGender || hasAadhaarWord);
+}
+
+/**
+ * Check if text specifically belongs to Aadhaar Back side
+ * MUST contain an Aadhaar-specific anchor (UIDAI, 1947, Aadhaar, Unique Identification)
+ */
+function isAadhaarBackDocument(text) {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  const normalized = t.replace(/\s+/g, ' ');
+
+  // 1. Mandatory Aadhaar anchor: Without this, it can NEVER be an Aadhaar back!
+  const hasAadhaarAnchor =
+    t.includes('uidai') ||
+    t.includes('help@uidai') ||
+    t.includes('1947') ||
+    normalized.includes('unique identification') ||
+    (t.includes('unique') && t.includes('identification')) ||
+    normalized.includes('authority of india') ||
+    t.includes('भारतीय विशिष्ट पहचान') ||
+    t.includes('mera aadhaar') ||
+    t.includes('meri pehchan') ||
+    t.includes('aadhaar') ||
+    t.includes('aadhar') ||
+    t.includes('आधार');
+
+  if (!hasAadhaarAnchor) {
+    return false;
+  }
+
+  // 2. Must contain back details: Address, Parentage, PIN, or UIDAI helpdesk
+  const hasAddress = t.includes('address') || t.includes('पता') || /\b[1-9][0-9]{5}\b/.test(t);
+  const hasParentCare =
+    t.includes('c/o') ||
+    t.includes('s/o') ||
+    t.includes('d/o') ||
+    t.includes('w/o') ||
+    t.includes('आत्मज') ||
+    t.includes('पत्नी') ||
+    t.includes('पुत्र') ||
+    t.includes('पुत्री');
+  const hasUidaiHelp = t.includes('help@uidai') || t.includes('1947') || t.includes('authority');
+
+  // If text is purely front (12-digit number + DOB + gender with NO address and NO helpdesk)
+  const has12Digits =
+    /\b\d{4}\s\d{4}\s\d{4}\b/.test(t) ||
+    /\b\d{12}\b/.test(t) ||
+    /[xX\*\.]{4}\s?[xX\*\.]{4}\s?\d{4}/.test(t);
+  const hasDobOrYob = t.includes('dob') || t.includes('birth') || t.includes('yob');
+  const hasGender = t.includes('male') || t.includes('female');
+
+  if (has12Digits && hasDobOrYob && hasGender && !hasAddress && !hasUidaiHelp && !hasParentCare) {
+    return false;
+  }
+
+  return Boolean(hasAddress || hasParentCare || hasUidaiHelp);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VOTER ID CARD HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * General check if text contains any Voter ID card keywords or patterns
  */
 function isVoterDocument(text) {
   if (!text) return false;
   const t = text.toLowerCase();
-  return (
-    t.includes('election commission') ||
-    t.includes('elector photo identity') ||
-    t.includes('bharat nirvachan') ||
-    t.includes('nirvachan aayog') ||
+  const normalized = t.replace(/\s+/g, ' ');
+
+  const hasElectionCommission =
+    normalized.includes('election commission') ||
+    (t.includes('election') && t.includes('commission'));
+
+  const hasElectorIdentity =
+    normalized.includes('elector photo identity') ||
+    (t.includes('elector') && t.includes('identity')) ||
+    (t.includes('elector') && t.includes('photo')) ||
+    t.includes('मतदाता पहचान पत्र') ||
+    t.includes('पहचान पत्र');
+
+  const hasNirvachan =
     t.includes('nirvachan') ||
-    t.includes('electoral registration officer') ||
-    t.includes('assembly constituency') ||
-    t.includes('electoral roll') ||
-    t.includes('polling station') ||
     t.includes('निर्वाचन') ||
     t.includes('मतदाता') ||
-    t.includes('पहचान पत्र') ||
-    /\b[a-z]{3}\d{7}\b/i.test(t) ||
-    (t.includes('epic') && !t.includes('uidai') && !t.includes('aadhaar')) ||
-    (t.includes('voter') && !t.includes('uidai') && !t.includes('aadhaar'))
+    t.includes('matdata');
+
+  const hasConstituency =
+    t.includes('constituency') ||
+    t.includes('electoral roll') ||
+    (t.includes('polling') && t.includes('station')) ||
+    t.includes('विधान सभा');
+
+  const hasElectoralOfficer =
+    t.includes('electoral registration') ||
+    (t.includes('electoral') && t.includes('officer')) ||
+    t.includes('निर्वाचक रजिस्ट्रीकरण');
+
+  const hasEpicRegex = /\b[a-z]{3}\d{7}\b/i.test(t);
+  const hasEpicWord = t.includes('epic') && !t.includes('uidai') && !t.includes('aadhaar');
+  const hasVoterWord = t.includes('voter') && !t.includes('uidai') && !t.includes('aadhaar');
+
+  return Boolean(
+    hasElectionCommission ||
+    hasElectorIdentity ||
+    hasNirvachan ||
+    hasConstituency ||
+    hasElectoralOfficer ||
+    hasEpicRegex ||
+    hasEpicWord ||
+    hasVoterWord
   );
 }
 
 /**
- * Check if text contains Voter ID Back side indicators (strictly Voter-specific)
+ * Strictly checks for Voter ID FRONT side only
+ */
+function isVoterFrontDocument(text) {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  const normalized = t.replace(/\s+/g, ' ');
+
+  const hasFrontKeyword =
+    normalized.includes('elector photo identity') ||
+    (t.includes('elector') && t.includes('identity')) ||
+    t.includes('मतदाता पहचान पत्र') ||
+    normalized.includes("elector's name") ||
+    normalized.includes('elector name') ||
+    normalized.includes('election commission') ||
+    (t.includes('election') && t.includes('commission')) ||
+    normalized.includes('bharat nirvachan') ||
+    t.includes('nirvachan aayog') ||
+    t.includes('भारत निर्वाचन आयोग');
+
+  const hasEpicRegex = /\b[a-z]{3}\d{7}\b/i.test(t);
+  const hasGender = t.includes('male') || t.includes('female') || t.includes('लिंग') || t.includes('gender') || t.includes('sex');
+  const hasDobOrAge = t.includes('dob') || t.includes('date of birth') || t.includes('जन्म तिथि') || t.includes('age') || t.includes('आयु');
+
+  const backUniqueMarkers = [
+    'electoral registration officer',
+    'निर्वाचक रजिस्ट्रीकरण अधिकारी',
+    'assembly constituency',
+    'विधान सभा निर्वाचन क्षेत्र',
+    'polling station',
+    'मतदान केंद्र',
+    'part no',
+    'भाग संख्या',
+    'serial no',
+    'क्रम संख्या',
+    'parliamentary constituency',
+  ];
+  const backScore = backUniqueMarkers.filter(m => t.includes(m)).length;
+  const hasAddress = t.includes('address') || t.includes('पता');
+
+  // If back markers are strong and no front identifiers, reject as front
+  if ((backScore >= 2 || (hasAddress && backScore >= 1)) && !hasFrontKeyword && !hasEpicRegex) {
+    return false;
+  }
+
+  return Boolean(
+    hasFrontKeyword ||
+    hasEpicRegex ||
+    (t.includes('nirvachan') && (hasGender || hasDobOrAge || t.includes('name'))) ||
+    (t.includes('voter') && (hasEpicRegex || hasGender || hasDobOrAge || t.includes('name')))
+  );
+}
+
+/**
+ * Strictly checks for Voter ID BACK side only
  */
 function isVoterBackDocument(text) {
   if (!text) return false;
   const t = text.toLowerCase();
-  return (
-    t.includes('electoral registration officer') ||
-    t.includes('electoral roll') ||
-    t.includes('assembly constituency') ||
-    t.includes('constituency no') ||
-    t.includes('polling station') ||
-    t.includes('part no') ||
-    t.includes('serial no') ||
-    t.includes('parliamentary constituency') ||
-    t.includes("father's name") ||
-    t.includes('father name') ||
-    t.includes("husband's name") ||
-    t.includes('husband name') ||
-    t.includes('विधान सभा') ||
-    t.includes('निर्वाचन क्षेत्र') ||
-    (t.includes('nirvachan') && t.includes('address')) ||
-    (t.includes('voter') && t.includes('address')) ||
-    (t.includes('election') && t.includes('address'))
-  );
+  const normalized = t.replace(/\s+/g, ' ');
+
+  const backMarkers = [
+    'electoral registration officer',
+    'निर्वाचक रजिस्ट्रीकरण अधिकारी',
+    'assembly constituency',
+    'constituency no',
+    'विधान सभा',
+    'निर्वाचन क्षेत्र',
+    'polling station',
+    'मतदान केंद्र',
+    'मतदान स्थल',
+    'part no',
+    'part number',
+    'भाग संख्या',
+    'serial no',
+    'क्रम संख्या',
+    'parliamentary constituency',
+    'संसदीय निर्वाचन क्षेत्र',
+    'date of download',
+  ];
+
+  const hasAddress = t.includes('address') || t.includes('पता');
+  const backMatches = backMarkers.filter(m => t.includes(m)).length;
+
+  const hasFrontKeyword = normalized.includes('elector photo identity') || t.includes('मतदाता पहचान पत्र');
+  const hasGender = t.includes('male') || t.includes('female') || t.includes('लिंग');
+  const hasDobOrAge = t.includes('dob') || t.includes('date of birth') || t.includes('जन्म तिथि');
+
+  // If text is clearly front (has header or gender/dob with NO address and NO back markers)
+  if ((hasFrontKeyword || hasGender || hasDobOrAge) && !hasAddress && backMatches === 0) {
+    return false;
+  }
+
+  if (hasAddress && (backMatches >= 1 || t.includes('election') || t.includes('nirvachan') || t.includes('voter') || t.includes('commission') || t.includes('officer'))) {
+    return true;
+  }
+
+  return backMatches >= 2;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PAN CARD HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Check if text contains PAN card indicators
@@ -117,117 +544,285 @@ function isVoterBackDocument(text) {
 function isPanDocument(text) {
   if (!text) return false;
   const t = text.toLowerCase();
+  const normalized = t.replace(/\s+/g, ' ');
   return (
-    t.includes('income tax department') ||
-    t.includes('permanent account number') ||
-    t.includes('income tax') ||
+    normalized.includes('income tax department') ||
+    (t.includes('income') && t.includes('tax')) ||
+    normalized.includes('permanent account number') ||
     /\b[a-z]{5}\d{4}[a-z]\b/i.test(t)
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DRIVING LICENSE HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
- * Check if text contains explicit Driving License keywords / patterns
+ * Check if text contains basic Driving License indicators
  */
 function isDlDocument(text) {
   if (!text) return false;
   const t = text.toLowerCase();
+  const normalized = t.replace(/\s+/g, ' ');
 
-  const hasDlKeyword =
-    t.includes('driving licence') ||
-    t.includes('driving license') ||
-    t.includes('driver licence') ||
-    t.includes('driver license') ||
-    t.includes('licensing authority') ||
-    t.includes('licence authority') ||
-    t.includes('license authority') ||
-    t.includes('motor vehicles') ||
-    t.includes('motor vehicle') ||
-    t.includes('transport department') ||
-    t.includes('form 7') ||
-    t.includes('form-7') ||
-    t.includes('authorisation to drive') ||
-    t.includes('authorization to drive') ||
-    t.includes('chalak anugyapti') ||
-    t.includes('चालन अनुज्ञप्ति') ||
-    t.includes('ड्राइविंग लाइसेंस') ||
-    t.includes('परिवहन विभाग') ||
-    t.includes('परिवहन') ||
-    t.includes('morth') ||
-    t.includes('parivahan') ||
-    t.includes('union of india');
+  const hasDrivingLicence =
+    normalized.includes('driving licence') ||
+    normalized.includes('driving license') ||
+    (t.includes('driving') && (t.includes('licence') || t.includes('license') || t.includes('licen')));
 
-  const hasDlPattern =
-    /\bdl[-\s.]?no/i.test(t) ||
-    /\bd\.l\.[-\s.]?no/i.test(t) ||
-    /\blicen[cs]e[-\s.]?no/i.test(t) ||
-    /\b[a-z]{2}[-\s/]?\d{2}[-\s/]?(?:19|20)\d{2}[-\s/]?\d{6,8}\b/i.test(t) ||
-    /\b[a-z]{2}\d{13,15}\b/i.test(t);
+  const hasUnionOfIndia =
+    normalized.includes('union of india') ||
+    (t.includes('union') && t.includes('india'));
 
-  const hasVehicleClass =
-    (t.includes('lmv') || t.includes('mcwg') || t.includes('mcwog') || t.includes('transport') || t.includes('non-transport')) &&
-    (t.includes('valid') || t.includes('issue') || t.includes('rto') || t.includes('holder') || t.includes('dob'));
+  const hasTransportDept =
+    normalized.includes('transport department') ||
+    (t.includes('transport') && (t.includes('department') || t.includes('dept') || t.includes('authority') || t.includes('delhi') || t.includes('govt')));
 
-  return hasDlKeyword || hasDlPattern || hasVehicleClass;
-}
+  const hasDlNumber =
+    /[a-z]{2}[-\s]?[0-9]{2}[-\s]?[0-9]{4}[-\s]?[0-9]{7}/i.test(t) ||
+    /[a-z]{2}[0-9]{2}[ -]?[0-9]{11}/i.test(t) ||
+    /\b[a-z]{2}[0-9]{2}\s?[0-9]{11}\b/i.test(t) ||
+    t.includes('dl no') ||
+    t.includes('licence no') ||
+    t.includes('license no');
 
-/**
- * Check if text contains Driving License Back side indicators
- */
-function isDlBackDocument(text) {
-  if (!text) return false;
-  const t = text.toLowerCase();
-  return (
-    isDlDocument(t) ||
-    t.includes('endorsement') ||
-    t.includes('endorsements') ||
-    t.includes('class of vehicle') ||
-    t.includes('non-transport') ||
-    t.includes('motor vehicles act') ||
-    t.includes('central motor vehicles') ||
-    t.includes('cmvr') ||
+  const hasDlBackMarkers =
+    normalized.includes('class of vehicle') ||
     t.includes('blood group') ||
-    t.includes('organ donor') ||
-    t.includes('emergency contact') ||
-    t.includes('badge no') ||
-    t.includes('badge number') ||
-    (t.includes('address') && (t.includes('licens') || t.includes('licenc') || t.includes('transport') || t.includes('rto') || t.includes('vehicle') || t.includes('holder') || t.includes('authority') || t.includes('valid') || t.includes('cov') || t.includes('issue'))) ||
-    ((t.includes('validity') || t.includes('valid')) && (t.includes('nt') || t.includes('tr') || t.includes('cov') || t.includes('date')))
+    t.includes('blood grp') ||
+    t.includes('endorsement') ||
+    t.includes('motor vehicles act');
+
+  return Boolean(
+    hasDrivingLicence ||
+    hasUnionOfIndia ||
+    hasTransportDept ||
+    hasDlNumber ||
+    hasDlBackMarkers
   );
 }
 
 /**
- * Validate that uploaded front and back images strictly belong to the expected document
- * @param {string} expectedType 'voter_id' | 'aadhaar' | 'driving_license'
+ * Strictly checks for DL FRONT side only
+ */
+function isDlFrontDocument(text) {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  const normalized = t.replace(/\s+/g, ' ');
+
+  const hasDlHeader =
+    normalized.includes('driving licence') ||
+    normalized.includes('driving license') ||
+    (t.includes('driving') && (t.includes('licence') || t.includes('license'))) ||
+    normalized.includes('union of india') ||
+    (t.includes('union') && t.includes('india')) ||
+    normalized.includes('transport department') ||
+    (t.includes('transport') && t.includes('department')) ||
+    t.includes('motor vehicles act') ||
+    t.includes('dl no') ||
+    t.includes('licence no') ||
+    t.includes('license no');
+
+  const hasDlNumber =
+    /[a-z]{2}[-\s]?[0-9]{2}[-\s]?[0-9]{4}[-\s]?[0-9]{7}/i.test(t) ||
+    /[a-z]{2}[0-9]{2}[ -]?[0-9]{11}/i.test(t) ||
+    /\b[a-z]{2}[0-9]{2}\s?[0-9]{11}\b/i.test(t) ||
+    t.includes('dl no') ||
+    t.includes('licence no') ||
+    t.includes('license no');
+
+  const hasDob =
+    t.includes('dob') ||
+    t.includes('date of birth') ||
+    t.includes('d.o.b') ||
+    t.includes('birth:') ||
+    /\b\d{2}[/-]\d{2}[/-]\d{4}\b/.test(t);
+
+  const hasParent =
+    t.includes('s/o') ||
+    t.includes('d/o') ||
+    t.includes('w/o') ||
+    t.includes('s/0') ||
+    t.includes('son of') ||
+    t.includes('daughter of') ||
+    t.includes('wife of');
+
+  // Back unique markers on Indian Driving Licenses
+  const backUniqueMarkers = [
+    'class of vehicle',
+    'endorsement',
+    'blood group',
+    'blood grp',
+    'organ donor',
+    'badge no',
+  ];
+  const backCount = backUniqueMarkers.filter(k => t.includes(k)).length;
+
+  // If back markers are strongly present (>=2) and no front indicators, reject
+  if (backCount >= 2 && !hasDlHeader && !hasParent && !hasDob) {
+    return false;
+  }
+
+  // To qualify as front:
+  if (hasDlHeader) return true;
+  if (hasDlNumber) return true;
+  if ((hasParent || hasDob) && (t.includes('licen') || t.includes('transport') || t.includes('valid'))) return true;
+
+  return false;
+}
+
+/**
+ * Strictly checks for DL BACK side only
+ */
+function isDlBackDocument(text) {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  const normalized = t.replace(/\s+/g, ' ');
+
+  const hasFrontHeader =
+    normalized.includes('union of india') ||
+    (t.includes('union') && t.includes('india')) ||
+    normalized.includes('driving licence') ||
+    normalized.includes('driving license');
+
+  const hasFrontParent =
+    t.includes('s/o') ||
+    t.includes('d/o') ||
+    t.includes('w/o') ||
+    t.includes('son of') ||
+    t.includes('daughter of') ||
+    t.includes('wife of') ||
+    t.includes('s/0');
+
+  const hasFrontDob =
+    t.includes('dob') ||
+    t.includes('date of birth') ||
+    t.includes('d.o.b') ||
+    t.includes('birth:');
+
+  const backUniqueMarkers = [
+    'class of vehicle',
+    'class of vehicles',
+    'endorsement',
+    'blood group',
+    'blood grp',
+    'organ donor',
+    'badge no',
+    'badge number',
+  ];
+  const backUniqueCount = backUniqueMarkers.filter(m => t.includes(m)).length;
+
+  // If it has front header/parentage/dob and NO back-unique markers, it's definitely front!
+  if ((hasFrontHeader || hasFrontParent || hasFrontDob) && backUniqueCount === 0) {
+    return false;
+  }
+
+  const hasVehicleClass =
+    t.includes('class of vehicle') ||
+    t.includes('cov') ||
+    t.includes('mcwg') ||
+    t.includes('lmv');
+
+  const hasAddress = t.includes('address') || t.includes('पता');
+
+  if (backUniqueCount >= 1) {
+    if (!hasFrontHeader) return true;
+    if (backUniqueCount >= 2 && !hasFrontParent && !hasFrontDob) return true;
+  }
+
+  if (hasAddress && hasVehicleClass && !hasFrontHeader && !hasFrontParent && !hasFrontDob) {
+    return true;
+  }
+
+  return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MAIN CONSISTENCY VALIDATOR (Applies strictly to Images & PDFs)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Validate that uploaded front and back files strictly belong to the expected document
+ * and ensure that Front is uploaded in Front slot and Back is uploaded in Back slot.
+ * Enforces strict Front and Back separation for BOTH images and PDFs.
+ *
+ * @param {string} expectedType 'voter_id' | 'aadhaar' | 'driving_license' | 'pan'
  * @param {Buffer} frontBuffer
  * @param {Buffer} backBuffer
  */
 async function validateDocumentConsistency({ expectedType, frontBuffer, backBuffer }) {
   if (!frontBuffer && !backBuffer) return;
 
+  const frontIsPdf = isPdfBuffer(frontBuffer);
+  const backIsPdf = isPdfBuffer(backBuffer);
+
+  // 1. Strict equality check: Front and Back must NEVER be the exact same file (applies to images AND PDFs)
+  if (frontBuffer && backBuffer && Buffer.isBuffer(frontBuffer) && Buffer.isBuffer(backBuffer)) {
+    if (frontBuffer.equals(backBuffer)) {
+      const docLabel = frontIsPdf ? 'PDF' : 'image';
+      const err = new Error(`Front and Back side cannot be the same ${docLabel}. Please upload Front and Back sides separately.`);
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const frontHash = crypto.createHash('sha256').update(frontBuffer).digest('hex');
+    const backHash = crypto.createHash('sha256').update(backBuffer).digest('hex');
+    if (frontHash === backHash) {
+      const docLabel = frontIsPdf ? 'PDF' : 'image';
+      const err = new Error(`Front and Back side cannot be the same ${docLabel}. Please upload Front and Back sides separately.`);
+      err.statusCode = 400;
+      throw err;
+    }
+  }
+
   const [frontText, backText] = await Promise.all([
     frontBuffer ? recognizeText(frontBuffer) : Promise.resolve(''),
     backBuffer ? recognizeText(backBuffer) : Promise.resolve(''),
   ]);
 
-  console.log("🔍 [Document OCR] Front Text:", frontText.slice(0, 150));
-  console.log("🔍 [Document OCR] Back Text:", backText.slice(0, 150));
+  // 2. Strict text equality check: If two separate files have identical extracted content, reject
+  if (
+    frontText &&
+    backText &&
+    frontText.trim().length > 30 &&
+    backText.trim().length > 30
+  ) {
+    const normFront = frontText.replace(/\s+/g, ' ').trim();
+    const normBack = backText.replace(/\s+/g, ' ').trim();
+    if (normFront === normBack) {
+      const docLabel = frontIsPdf ? 'PDF' : 'image';
+      const err = new Error(`Front and Back side ${docLabel} appear to be identical. Please upload Front and Back sides separately.`);
+      err.statusCode = 400;
+      throw err;
+    }
+  }
 
-  const frontHasPan = isPanDocument(frontText);
-  const backHasPan = isPanDocument(backText);
+  const frontPdfSigs = frontIsPdf ? scanPdfBufferForSignatures(frontBuffer) : {};
+  const backPdfSigs = backIsPdf ? scanPdfBufferForSignatures(backBuffer) : {};
 
-  const frontHasVoter = isVoterDocument(frontText);
-  const backHasVoter = isVoterDocument(backText) || isVoterBackDocument(backText);
+  const frontHasPan = isPanDocument(frontText) || Boolean(frontPdfSigs.hasPan);
+  const backHasPan = isPanDocument(backText) || Boolean(backPdfSigs.hasPan);
 
-  const frontHasAadhaar = isAadhaarDocument(frontText) && !frontHasVoter && !frontHasPan;
-  const backHasAadhaar = isAadhaarDocument(backText) && !backHasVoter && !backHasPan;
+  const frontHasVoter = isVoterDocument(frontText) || Boolean(frontPdfSigs.hasVoter);
+  const backHasVoter = isVoterDocument(backText) || isVoterBackDocument(backText) || Boolean(backPdfSigs.hasVoter);
 
-  const frontHasDl = isDlDocument(frontText) && !frontHasVoter && !frontHasAadhaar && !frontHasPan;
-  const backHasDl = (isDlDocument(backText) || isDlBackDocument(backText)) && !backHasVoter && !backHasAadhaar && !backHasPan;
+  const frontHasDl = (isDlDocument(frontText) || Boolean(frontPdfSigs.hasDl)) && !frontHasVoter && !frontHasPan;
+  const backHasDl = (isDlDocument(backText) || isDlBackDocument(backText) || Boolean(backPdfSigs.hasDl)) && !backHasVoter && !backHasPan;
+
+  const frontHasAadhaar = (isAadhaarDocument(frontText) || Boolean(frontPdfSigs.hasAadhaar)) && !frontHasVoter && !frontHasPan && !frontHasDl;
+  const backHasAadhaar = (isAadhaarDocument(backText) || Boolean(backPdfSigs.hasAadhaar)) && !backHasVoter && !backHasPan && !backHasDl;
+
+  const frontHasExtractableText = Boolean(frontText && frontText.trim().length >= 25);
+  const backHasExtractableText = Boolean(backText && backText.trim().length >= 25);
 
   logger.info('Document consistency pre-check analysis', {
     expectedType,
-    frontHasAadhaar,
-    backHasAadhaar,
+    frontIsPdf,
+    backIsPdf,
+    frontTextLen: frontText?.length || 0,
+    backTextLen: backText?.length || 0,
+    frontMatchedDoc: frontHasAadhaar,
+    backMatchedDoc: backHasAadhaar,
     frontHasVoter,
     backHasVoter,
     frontHasDl,
@@ -236,88 +831,131 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
     backHasPan,
   });
 
-  // ── 1. VOTER ID VALIDATION ──────────────────────────────────────────────
+  // ── 1. VOTER ID VALIDATION (Images & PDFs) ──────────────────────────────
   if (expectedType === 'voter_id') {
+    // Cross-document rejection: PAN
     if (frontHasPan || backHasPan) {
       const err = new Error('PAN card detected. Please upload a valid Voter ID card.');
       err.statusCode = 400;
       throw err;
     }
 
+    // Cross-document rejection: Aadhaar
     if (frontHasAadhaar || backHasAadhaar) {
       const err = new Error('Aadhaar card detected. Please upload a valid Voter ID card.');
       err.statusCode = 400;
       throw err;
     }
 
+    // Cross-document rejection: DL
     if (frontHasDl || backHasDl) {
       const err = new Error('Driving License detected. Please upload a valid Voter ID card.');
       err.statusCode = 400;
       throw err;
     }
 
-    if (!frontHasVoter) {
+    // Check if Back side was uploaded into Front slot
+    if (frontText && isVoterBackDocument(frontText) && !isVoterFrontDocument(frontText)) {
+      const err = new Error('Voter ID (Back side) detected in Front side upload. Please upload the Front side of your Voter ID.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // Validate Front side Voter ID only if sufficient text was extracted locally
+    if (frontHasExtractableText && !frontHasVoter && !isVoterFrontDocument(frontText)) {
       const err = new Error('Please upload a valid Voter ID card (Front side). Only Voter ID card is accepted.');
       err.statusCode = 400;
       throw err;
     }
 
-    if (!backHasVoter && !backText.includes('address')) {
+    // Check if Front side was uploaded into Back slot
+    if (backText && isVoterFrontDocument(backText) && !isVoterBackDocument(backText)) {
+      const err = new Error('Voter ID (Front side) detected in Back side upload. Please upload the Back side of your Voter ID.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // Validate Back side Voter ID only if sufficient text was extracted locally
+    const hasAnyVoterBackMarker =
+      isVoterBackDocument(backText) ||
+      backHasVoter ||
+      backText.includes('electoral registration officer') ||
+      backText.includes('निर्वाचक रजिस्ट्रीकरण अधिकारी') ||
+      backText.includes('assembly constituency') ||
+      backText.includes('विधान सभा') ||
+      backText.includes('निर्वाचन क्षेत्र') ||
+      backText.includes('polling station') ||
+      backText.includes('मतदान केंद्र') ||
+      backText.includes('part no') ||
+      backText.includes('भाग संख्या') ||
+      backText.includes('serial no') ||
+      backText.includes('क्रम संख्या') ||
+      (backText.includes('address') && (backText.includes('nirvachan') || backText.includes('election') || backText.includes('voter') || backText.includes('epic') || backText.includes('officer')));
+
+    if (backHasExtractableText && !hasAnyVoterBackMarker) {
       const err = new Error('Please upload a valid Voter ID card (Back side). Only Voter ID card is accepted.');
       err.statusCode = 400;
       throw err;
     }
   }
 
-  // ── 2. AADHAAR VALIDATION ───────────────────────────────────────────────
+  // ── 2. AADHAAR VALIDATION (Images & PDFs) ───────────────────────────────
   if (expectedType === 'aadhaar') {
-    // A. Reject PAN Card
+    // Cross-document rejection: PAN
     if (frontHasPan || backHasPan) {
       const err = new Error('PAN card detected. Please upload an Aadhaar card instead.');
       err.statusCode = 400;
       throw err;
     }
 
-    // B. Reject Voter ID
+    // Cross-document rejection: Voter ID (Front or Back)
     if (frontHasVoter || backHasVoter) {
       const err = new Error('Voter ID detected. Please upload an Aadhaar card instead.');
       err.statusCode = 400;
       throw err;
     }
 
-    // C. Reject Driving License
+    // Cross-document rejection: Driving License (Front or Back)
     if (frontHasDl || backHasDl) {
       const err = new Error('Driving License detected. Please upload an Aadhaar card instead.');
       err.statusCode = 400;
       throw err;
     }
 
-    // D. Front MUST be an actual Aadhaar card (rejects baby photos, selfies, blank, random images)
-    if (!frontHasAadhaar) {
+    // Check if Back side was uploaded into Front slot
+    if (frontText && isAadhaarBackDocument(frontText) && !isAadhaarFrontDocument(frontText)) {
+      const err = new Error('Aadhaar card (Back side) detected in Front side upload. Please upload the Front side of your Aadhaar card.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // Front: only reject if sufficient text was extracted locally and it is clearly not Aadhaar
+    if (frontHasExtractableText && !frontHasAadhaar && !isAadhaarFrontDocument(frontText)) {
       const err = new Error('Please upload a valid Aadhaar card (Front side). Only Aadhaar card is accepted.');
       err.statusCode = 400;
       throw err;
     }
 
-    // E. Back MUST be an actual Aadhaar card back side
-    const backIsAadhaar =
-      backHasAadhaar ||
-      backText.includes('help@uidai') ||
-      backText.includes('1947') ||
-      backText.includes('unique') ||
-      backText.includes('authority') ||
-      (backText.includes('address') && (backText.includes('uidai') || backText.includes('aadhaar') || backText.includes('s/o') || backText.includes('d/o') || backText.includes('c/o') || backText.includes('w/o')));
+    // Check if Front side was uploaded into Back slot
+    if (backText && isAadhaarFrontDocument(backText) && !isAadhaarBackDocument(backText)) {
+      const err = new Error('Aadhaar card (Front side) detected in Back side upload. Please upload the Back side of your Aadhaar card.');
+      err.statusCode = 400;
+      throw err;
+    }
 
-    if (!backIsAadhaar) {
+    // Back: only reject if sufficient text was extracted locally and it is clearly not Aadhaar
+    const hasAnyAadhaarBackMarker = isAadhaarBackDocument(backText);
+
+    if (backHasExtractableText && !hasAnyAadhaarBackMarker) {
       const err = new Error('Please upload a valid Aadhaar card (Back side). Only Aadhaar card is accepted.');
       err.statusCode = 400;
       throw err;
     }
   }
 
-  // ── 3. DRIVING LICENSE VALIDATION ───────────────────────────────────────
+  // ── 3. DRIVING LICENSE VALIDATION (Images & PDFs) ───────────────────────
   if (expectedType === 'driving_license') {
-    // A. Validate Front Side first
+    // Cross-document rejection on front
     if (frontHasPan) {
       const err = new Error('PAN card detected on Front side. Please upload a valid Driving License (Front side).');
       err.statusCode = 400;
@@ -333,13 +971,22 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
       err.statusCode = 400;
       throw err;
     }
-    if (!frontHasDl) {
+
+    // Check if Back side was uploaded into Front slot (image or PDF)
+    if (frontText && isDlBackDocument(frontText) && !isDlFrontDocument(frontText)) {
+      const err = new Error('Driving License (Back side) detected in Front side upload. Please upload the Front side of your Driving License.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // Validate DL Front side only if sufficient text was extracted locally
+    if (frontHasExtractableText && !frontHasDl && !isDlFrontDocument(frontText)) {
       const err = new Error('Please upload a valid Driving License (Front side). Only Driving License is accepted.');
       err.statusCode = 400;
       throw err;
     }
 
-    // B. Validate Back Side second
+    // Cross-document rejection on back
     if (backHasPan) {
       const err = new Error('PAN card detected on Back side. Please upload a valid Driving License (Back side).');
       err.statusCode = 400;
@@ -355,18 +1002,68 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
       err.statusCode = 400;
       throw err;
     }
-    const backIsDl =
-      backHasDl ||
-      isDlBackDocument(backText) ||
-      (backText.includes('address') && (backText.includes('licens') || backText.includes('licenc') || backText.includes('transport') || backText.includes('rto') || backText.includes('vehicle') || backText.includes('holder') || backText.includes('valid'))) ||
-      backText.includes('endorsement') ||
-      backText.includes('non-transport') ||
-      backText.includes('motor vehicles') ||
-      backText.includes('transport') ||
-      backText.includes('licensing');
 
-    if (!backIsDl) {
+    // Check if Front side was uploaded into Back slot (image or PDF)
+    if (backText && isDlFrontDocument(backText) && !isDlBackDocument(backText)) {
+      const err = new Error('Driving License (Front side) detected in Back side upload. Please upload the Back side of your Driving License.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // Validate DL Back side only if sufficient text was extracted locally
+    const hasAnyDlBackMarker =
+      isDlBackDocument(backText) ||
+      backHasDl ||
+      backText.includes('endorsement') ||
+      backText.includes('blood group') ||
+      backText.includes('blood grp') ||
+      backText.includes('b.g.') ||
+      backText.includes('organ donor') ||
+      backText.includes('badge') ||
+      backText.includes('class of vehicle') ||
+      backText.includes('class of vehicles') ||
+      backText.includes('cov') ||
+      backText.includes('mcwg') ||
+      backText.includes('lmv') ||
+      backText.includes('trans') ||
+      backText.includes('vehicle') ||
+      backText.includes('motor') ||
+      backText.includes('cmvr') ||
+      backText.includes('form 7') ||
+      backText.includes('licens') ||
+      backText.includes('transport') ||
+      backText.includes('rto') ||
+      backText.includes('authority') ||
+      backText.includes('holder') ||
+      backText.includes('valid') ||
+      (backText.includes('address') && (backText.includes('licens') || backText.includes('licenc') || backText.includes('authority') || backText.includes('holder') || backText.includes('rto')));
+
+    if (backHasExtractableText && !hasAnyDlBackMarker) {
       const err = new Error('Please upload a valid Driving License (Back side). Only Driving License is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+  }
+
+  // ── 4. PAN CARD VALIDATION (Images & PDFs) ──────────────────────────────
+  if (expectedType === 'pan') {
+    if (frontHasAadhaar || backHasAadhaar) {
+      const err = new Error('Aadhaar card detected. Please upload a valid PAN card instead.');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (frontHasVoter || backHasVoter) {
+      const err = new Error('Voter ID detected. Please upload a valid PAN card instead.');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (frontHasDl || backHasDl) {
+      const err = new Error('Driving License detected. Please upload a valid PAN card instead.');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (frontHasExtractableText && !frontHasPan) {
+      const err = new Error('Please upload a valid PAN card. Only PAN card is accepted.');
       err.statusCode = 400;
       throw err;
     }
@@ -374,11 +1071,17 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
 }
 
 module.exports = {
+  isPdfBuffer,
   recognizeText,
   isAadhaarDocument,
+  isAadhaarFrontDocument,
+  isAadhaarBackDocument,
   isVoterDocument,
+  isVoterFrontDocument,
   isVoterBackDocument,
+  isPanDocument,
   isDlDocument,
+  isDlFrontDocument,
   isDlBackDocument,
   validateDocumentConsistency,
 };

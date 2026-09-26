@@ -9,6 +9,8 @@ const {
   generateSafeGroupId,
 } = require('../../../../helpers/documentHelper');
 
+const { validateDocumentConsistency } = require('../../../../helpers/documentClassifier');
+
 const bufferToStream = (buffer) => Readable.from(buffer);
 
 /**
@@ -192,6 +194,13 @@ const processPanVerificationFlow = async ({
 const processPanOcrFlow = async ({ userId, file, correlationId, consent, consentPurpose }) => {
   logger.info('Starting PAN OCR extraction flow', { correlationId, userId });
 
+  if (file && file.buffer) {
+    await validateDocumentConsistency({
+      expectedType: 'pan',
+      frontBuffer: file.buffer,
+    });
+  }
+
   const existingRecord = await Identification.findOne(
     { userId, groupId: { $exists: true, $ne: null } },
     { groupId: 1 }
@@ -203,6 +212,26 @@ const processPanOcrFlow = async ({ userId, file, correlationId, consent, consent
   try {
     gatewayResponse = await extractPanOcr({ panFile: file, correlationId });
   } catch (err) {
+    const dynamicMsg =
+      err.response?.data?.message ||
+      err.response?.data?.error?.message ||
+      (typeof err.response?.data?.error === 'string' ? err.response.data.error : null) ||
+      err.message;
+    const lower = String(dynamicMsg).toLowerCase();
+    if (
+      lower.includes('non compliant') ||
+      lower.includes('quality standard') ||
+      lower.includes('not compliant') ||
+      lower.includes('document_quality') ||
+      lower.includes('no_face_found') ||
+      lower.includes('invalid') ||
+      lower.includes('bad_request')
+    ) {
+      const error = new Error('Uploaded document is not a valid PAN card. Please upload a clear photo or PDF of your PAN card.');
+      error.statusCode = 400;
+      throw error;
+    }
+
     logger.warn('Setu PAN OCR gateway encountered an issue, applying fallback OCR extraction', {
       error: err.message,
       correlationId,

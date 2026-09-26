@@ -3,7 +3,7 @@ const Joi  = require("joi")
     name: Joi.string().min(2).max(50).trim().required(),
     email: Joi.string().email().trim().lowercase().required(),
     phone: Joi.string().pattern(/^[0-9]{10,15}$/).required(),
-    profileImage: Joi.string().uri().optional().allow('', null),
+    // profileImage: Joi.string().uri().optional().allow('', null),
     password: Joi.string().min(6).optional().default('Employix@123'),
     role: Joi.string().valid('user', 'admin').default('user')
 });

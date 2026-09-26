@@ -108,10 +108,17 @@ async function getCurrentUserService(userId, req = null) {
   let userReferences = [];
   let completedReferencesCount = 0;
   try {
-    userReferences = await Referral.find({ referrerId: userId }).sort({ createdAt: -1 }).lean();
-    completedReferencesCount = userReferences.filter(
+    const rawRefs = await Referral.find({ referrerId: userId }).sort({ createdAt: -1 }).lean();
+    completedReferencesCount = rawRefs.filter(
       (ref) => ref.status === 'completed' || ref.isFeedbackSubmitted || ref.isPointsAwarded
     ).length;
+    const clientUrl = process.env.CLIENT_APP_URL || 'http://localhost:5173';
+    userReferences = rawRefs.map((ref) => ({
+      ...ref,
+      shareableLink: ref.rawToken && !ref.isFeedbackSubmitted
+        ? `${clientUrl}/reference-verification?token=${ref.rawToken}`
+        : null,
+    }));
   } catch (refErr) {
     console.error('Error loading references:', refErr);
   }

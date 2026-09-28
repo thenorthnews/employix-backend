@@ -195,26 +195,116 @@ async function extractTextFromPdf(buffer) {
 }
 
 /**
+ * Extract image width, height, and format from binary buffer (JPEG, PNG, WebP)
+ */
+function getImageDimensions(buffer) {
+  if (!buffer || !Buffer.isBuffer(buffer) || buffer.length < 24) return null;
+
+  // PNG
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
+    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20), format: 'png' };
+  }
+
+  // JPEG
+  if (buffer[0] === 0xFF && buffer[1] === 0xD8) {
+    let offset = 2;
+    while (offset < buffer.length - 8) {
+      if (buffer[offset] !== 0xFF) {
+        offset++;
+        continue;
+      }
+      const marker = buffer[offset + 1];
+      if (
+        (marker >= 0xC0 && marker <= 0xC3) ||
+        (marker >= 0xC5 && marker <= 0xC7) ||
+        (marker >= 0xC9 && marker <= 0xCB) ||
+        (marker >= 0xCD && marker <= 0xCF)
+      ) {
+        const height = buffer.readUInt16BE(offset + 5);
+        const width = buffer.readUInt16BE(offset + 7);
+        return { width, height, format: 'jpeg' };
+      }
+      const len = buffer.readUInt16BE(offset + 2);
+      offset += 2 + len;
+    }
+  }
+
+  // WebP
+  if (
+    buffer.length > 30 &&
+    buffer.slice(0, 4).toString('latin1') === 'RIFF' &&
+    buffer.slice(8, 12).toString('latin1') === 'WEBP'
+  ) {
+    const chunkType = buffer.slice(12, 16).toString('latin1');
+    if (chunkType === 'VP8 ') {
+      return {
+        width: buffer.readUInt16LE(26) & 0x3fff,
+        height: buffer.readUInt16LE(28) & 0x3fff,
+        format: 'webp',
+      };
+    }
+    if (chunkType === 'VP8X') {
+      return {
+        width: 1 + buffer.readUIntLE(24, 3),
+        height: 1 + buffer.readUIntLE(27, 3),
+        format: 'webp',
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Check if text contains Passport markers
+ */
+function isPassportDocument(text) {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  return (
+    (t.includes('passport') || t.includes('pass port')) &&
+    (t.includes('republic of india') ||
+      t.includes('भारत गणराज्य') ||
+      t.includes('type/type') ||
+      t.includes('country code') ||
+      t.includes('given name'))
+  );
+}
+
+/**
+ * Perform local text extraction on an image or PDF buffer with confidence & word metrics
+ */
+async function recognizeDetailedText(buffer) {
+  if (!buffer || !Buffer.isBuffer(buffer)) {
+    return { text: '', confidence: 0, words: [], isPdf: false };
+  }
+
+  if (isPdfBuffer(buffer)) {
+    const text = await extractTextFromPdf(buffer);
+    const words = text ? text.split(/\s+/).filter(Boolean) : [];
+    return { text, confidence: 95, words, isPdf: true };
+  }
+
+  try {
+    const { data } = await Tesseract.recognize(buffer, 'eng');
+    const text = (data?.text || '').toLowerCase();
+    const confidence = typeof data?.confidence === 'number' ? data.confidence : 0;
+    const words = Array.isArray(data?.words) ? data.words : [];
+    return { text, confidence, words, isPdf: false };
+  } catch (err) {
+    logger.warn('Local OCR image text extraction failed', { error: err.message });
+    return { text: '', confidence: 0, words: [], isPdf: false };
+  }
+}
+
+/**
  * Perform local text extraction on an image or PDF buffer
  * - Digital & scanned PDF: extracted via pdf-parse, zlib stream decompression, and OCR
  * - Images (PNG/JPEG/WEBP): extracted directly via Tesseract OCR
  */
 async function recognizeText(buffer) {
-  if (!buffer || !Buffer.isBuffer(buffer)) return '';
-
-  // 1. If buffer is a PDF
-  if (isPdfBuffer(buffer)) {
-    return await extractTextFromPdf(buffer);
-  }
-
-  // 2. If buffer is an image (PNG/JPEG/WEBP), use Tesseract with safe error handling
-  try {
-    const { data: { text } } = await Tesseract.recognize(buffer, 'eng');
-    return (text || '').toLowerCase();
-  } catch (err) {
-    logger.warn('Local OCR image text extraction failed', { error: err.message });
-    return '';
-  }
+  const result = await recognizeDetailedText(buffer);
+  return result.text;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -399,7 +489,8 @@ function isVoterDocument(text) {
     (t.includes('elector') && t.includes('identity')) ||
     (t.includes('elector') && t.includes('photo')) ||
     t.includes('मतदाता पहचान पत्र') ||
-    t.includes('पहचान पत्र');
+    t.includes('पहचान पत्र') ||
+    t.includes('elector');
 
   const hasNirvachan =
     t.includes('nirvachan') ||
@@ -411,15 +502,24 @@ function isVoterDocument(text) {
     t.includes('constituency') ||
     t.includes('electoral roll') ||
     (t.includes('polling') && t.includes('station')) ||
-    t.includes('विधान सभा');
+    t.includes('विधान सभा') ||
+    t.includes('निर्वाचन क्षेत्र');
 
   const hasElectoralOfficer =
     t.includes('electoral registration') ||
     (t.includes('electoral') && t.includes('officer')) ||
-    t.includes('निर्वाचक रजिस्ट्रीकरण');
+    t.includes('निर्वाचक रजिस्ट्रीकरण') ||
+    t.includes('निर्वाचक') ||
+    t.includes('electoral');
+
+  const hasEciHelpline =
+    t.includes('eci.gov.in') ||
+    t.includes('1950') ||
+    normalized.includes('eci ') ||
+    t.includes('भारत निर्वाचन');
 
   const hasEpicRegex = /\b[a-z]{3}\d{7}\b/i.test(t);
-  const hasEpicWord = t.includes('epic') && !t.includes('uidai') && !t.includes('aadhaar');
+  const hasEpicWord = (t.includes('epic') || t.includes('epic no') || t.includes('epic/')) && !t.includes('uidai') && !t.includes('aadhaar');
   const hasVoterWord = t.includes('voter') && !t.includes('uidai') && !t.includes('aadhaar');
 
   return Boolean(
@@ -428,6 +528,7 @@ function isVoterDocument(text) {
     hasNirvachan ||
     hasConstituency ||
     hasElectoralOfficer ||
+    hasEciHelpline ||
     hasEpicRegex ||
     hasEpicWord ||
     hasVoterWord
@@ -513,6 +614,11 @@ function isVoterBackDocument(text) {
     'parliamentary constituency',
     'संसदीय निर्वाचन क्षेत्र',
     'date of download',
+    'eci.gov.in',
+    '1950',
+    'electoral',
+    'निर्वाचक',
+    'elector',
   ];
 
   const hasAddress = t.includes('address') || t.includes('पता');
@@ -527,11 +633,24 @@ function isVoterBackDocument(text) {
     return false;
   }
 
-  if (hasAddress && (backMatches >= 1 || t.includes('election') || t.includes('nirvachan') || t.includes('voter') || t.includes('commission') || t.includes('officer'))) {
+  if (
+    hasAddress &&
+    (backMatches >= 1 ||
+      t.includes('election') ||
+      t.includes('nirvachan') ||
+      t.includes('voter') ||
+      t.includes('commission') ||
+      t.includes('officer') ||
+      t.includes('eci') ||
+      t.includes('1950'))
+  ) {
     return true;
   }
 
-  return backMatches >= 2;
+  const hasEpicRegex = /\b[a-z]{3}\d{7}\b/i.test(t);
+  const hasEciWebOrHelpline = t.includes('eci.gov.in') || t.includes('1950');
+
+  return backMatches >= 1 || hasEpicRegex || hasEciWebOrHelpline;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -775,12 +894,18 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
     }
   }
 
-  const [frontText, backText] = await Promise.all([
-    frontBuffer ? recognizeText(frontBuffer) : Promise.resolve(''),
-    backBuffer ? recognizeText(backBuffer) : Promise.resolve(''),
+  const [frontRes, backRes] = await Promise.all([
+    frontBuffer
+      ? recognizeDetailedText(frontBuffer)
+      : Promise.resolve({ text: '', confidence: 0, words: [], isPdf: false }),
+    backBuffer
+      ? recognizeDetailedText(backBuffer)
+      : Promise.resolve({ text: '', confidence: 0, words: [], isPdf: false }),
   ]);
 
-  // 2. Strict text equality check: If two separate files have identical extracted content, reject
+  const frontText = frontRes.text;
+  const backText = backRes.text;
+
   if (
     frontText &&
     backText &&
@@ -834,22 +959,29 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
   // ── 1. VOTER ID VALIDATION (Images & PDFs) ──────────────────────────────
   if (expectedType === 'voter_id') {
     // Cross-document rejection: PAN
-    if (frontHasPan || backHasPan) {
-      const err = new Error('PAN card detected. Please upload a valid Voter ID card.');
+    if (frontHasPan || backHasPan || isPanDocument(frontText) || isPanDocument(backText)) {
+      const err = new Error('PAN card detected. Only Voter ID card is accepted for this verification. No other document is accepted.');
       err.statusCode = 400;
       throw err;
     }
 
     // Cross-document rejection: Aadhaar
-    if (frontHasAadhaar || backHasAadhaar) {
-      const err = new Error('Aadhaar card detected. Please upload a valid Voter ID card.');
+    if (frontHasAadhaar || backHasAadhaar || isAadhaarDocument(frontText) || isAadhaarDocument(backText)) {
+      const err = new Error('Aadhaar card detected. Only Voter ID card is accepted for this verification. No other document is accepted.');
       err.statusCode = 400;
       throw err;
     }
 
     // Cross-document rejection: DL
-    if (frontHasDl || backHasDl) {
-      const err = new Error('Driving License detected. Please upload a valid Voter ID card.');
+    if (frontHasDl || backHasDl || isDlDocument(frontText) || isDlDocument(backText) || isDlBackDocument(backText)) {
+      const err = new Error('Driving License detected. Only Voter ID card is accepted for this verification. No other document is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // Cross-document rejection: Passport
+    if (isPassportDocument(frontText) || isPassportDocument(backText)) {
+      const err = new Error('Passport detected. Only Voter ID card is accepted for this verification. No other document is accepted.');
       err.statusCode = 400;
       throw err;
     }
@@ -863,7 +995,7 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
 
     // Validate Front side Voter ID only if sufficient text was extracted locally
     if (frontHasExtractableText && !frontHasVoter && !isVoterFrontDocument(frontText)) {
-      const err = new Error('Please upload a valid Voter ID card (Front side). Only Voter ID card is accepted.');
+      const err = new Error('Invalid document detected on Front side. Only Voter ID card is accepted for this verification. No other document is accepted.');
       err.statusCode = 400;
       throw err;
     }
@@ -893,7 +1025,7 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
       (backText.includes('address') && (backText.includes('nirvachan') || backText.includes('election') || backText.includes('voter') || backText.includes('epic') || backText.includes('officer')));
 
     if (backHasExtractableText && !hasAnyVoterBackMarker) {
-      const err = new Error('Please upload a valid Voter ID card (Back side). Only Voter ID card is accepted.');
+      const err = new Error('Invalid document detected on Back side. Only Voter ID card is accepted for this verification. No other document is accepted.');
       err.statusCode = 400;
       throw err;
     }
@@ -901,53 +1033,170 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
 
   // ── 2. AADHAAR VALIDATION (Images & PDFs) ───────────────────────────────
   if (expectedType === 'aadhaar') {
-    // Cross-document rejection: PAN
-    if (frontHasPan || backHasPan) {
-      const err = new Error('PAN card detected. Please upload an Aadhaar card instead.');
+    // 1. Strict Cross-Document Detection (MUST BE FIRST before blur / clarity or slot checks!)
+    // Voter ID card detection (Front or Back)
+    if (
+      frontHasVoter ||
+      backHasVoter ||
+      isVoterDocument(frontText) ||
+      isVoterDocument(backText) ||
+      isVoterBackDocument(backText)
+    ) {
+      const err = new Error('Voter ID card detected. Only Aadhaar card is accepted for this verification. No other document is accepted.');
       err.statusCode = 400;
       throw err;
     }
 
-    // Cross-document rejection: Voter ID (Front or Back)
-    if (frontHasVoter || backHasVoter) {
-      const err = new Error('Voter ID detected. Please upload an Aadhaar card instead.');
+    // PAN card detection (Front or Back)
+    if (frontHasPan || backHasPan || isPanDocument(frontText) || isPanDocument(backText)) {
+      const err = new Error('PAN card detected. Only Aadhaar card is accepted for this verification. No other document is accepted.');
       err.statusCode = 400;
       throw err;
     }
 
-    // Cross-document rejection: Driving License (Front or Back)
-    if (frontHasDl || backHasDl) {
-      const err = new Error('Driving License detected. Please upload an Aadhaar card instead.');
+    // Driving License detection (Front or Back)
+    if (frontHasDl || backHasDl || isDlDocument(frontText) || isDlDocument(backText) || isDlBackDocument(backText)) {
+      const err = new Error('Driving License detected. Only Aadhaar card is accepted for this verification. No other document is accepted.');
       err.statusCode = 400;
       throw err;
     }
 
-    // Check if Back side was uploaded into Front slot
+    // Passport detection (Front or Back)
+    if (isPassportDocument(frontText) || isPassportDocument(backText)) {
+      const err = new Error('Passport detected. Only Aadhaar card is accepted for this verification. No other document is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // 2. Slot Position Checks
     if (frontText && isAadhaarBackDocument(frontText) && !isAadhaarFrontDocument(frontText)) {
-      const err = new Error('Aadhaar card (Back side) detected in Front side upload. Please upload the Front side of your Aadhaar card.');
+      const err = new Error(
+        'Aadhaar card (Back side) detected in Front side upload. Please upload the Front side of your Aadhaar card.'
+      );
       err.statusCode = 400;
       throw err;
     }
 
-    // Front: only reject if sufficient text was extracted locally and it is clearly not Aadhaar
-    if (frontHasExtractableText && !frontHasAadhaar && !isAadhaarFrontDocument(frontText)) {
-      const err = new Error('Please upload a valid Aadhaar card (Front side). Only Aadhaar card is accepted.');
-      err.statusCode = 400;
-      throw err;
-    }
-
-    // Check if Front side was uploaded into Back slot
     if (backText && isAadhaarFrontDocument(backText) && !isAadhaarBackDocument(backText)) {
-      const err = new Error('Aadhaar card (Front side) detected in Back side upload. Please upload the Back side of your Aadhaar card.');
+      const err = new Error(
+        'Aadhaar card (Front side) detected in Back side upload. Please upload the Back side of your Aadhaar card.'
+      );
       err.statusCode = 400;
       throw err;
     }
 
-    // Back: only reject if sufficient text was extracted locally and it is clearly not Aadhaar
-    const hasAnyAadhaarBackMarker = isAadhaarBackDocument(backText);
+    // 3. Authentic Aadhaar Document Checks
+    const hasFrontAadhaar = frontHasAadhaar || isAadhaarFrontDocument(frontText);
+    const hasBackAadhaar = backHasAadhaar || isAadhaarBackDocument(backText);
 
-    if (backHasExtractableText && !hasAnyAadhaarBackMarker) {
-      const err = new Error('Please upload a valid Aadhaar card (Back side). Only Aadhaar card is accepted.');
+    // If both slots contain text but neither matches Aadhaar
+    if (!hasFrontAadhaar && !hasBackAadhaar && (frontText.trim().length >= 10 || backText.trim().length >= 10)) {
+      const err = new Error('Invalid document detected. Only Aadhaar card is accepted for this verification. No other document is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // If Front has extractable text and is not Aadhaar Front
+    if (frontHasExtractableText && !hasFrontAadhaar) {
+      const err = new Error('Invalid document detected on Front side. Only Aadhaar card is accepted for this verification. No other document is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // If Back has extractable text and is not Aadhaar Back
+    if (backHasExtractableText && !hasBackAadhaar) {
+      const err = new Error('Invalid document detected on Back side. Only Aadhaar card is accepted for this verification. No other document is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // 4. Dimensions and Crop Check (for uploaded images)
+    if (!frontIsPdf && frontBuffer) {
+      const dim = getImageDimensions(frontBuffer);
+      if (dim) {
+        if (dim.width < 320 || dim.height < 180) {
+          const err = new Error(
+            'The uploaded Aadhaar card (Front side) image appears cropped or too small. Please upload a full-size photo showing all 4 corners.'
+          );
+          err.statusCode = 400;
+          throw err;
+        }
+        const aspect = dim.width / dim.height;
+        if (aspect < 0.45 || aspect > 2.8) {
+          const err = new Error(
+            'The uploaded Aadhaar card (Front side) image appears cropped or cut off. Please upload the complete card.'
+          );
+          err.statusCode = 400;
+          throw err;
+        }
+      }
+    }
+
+    if (!backIsPdf && backBuffer) {
+      const dim = getImageDimensions(backBuffer);
+      if (dim) {
+        if (dim.width < 320 || dim.height < 180) {
+          const err = new Error(
+            'The uploaded Aadhaar card (Back side) image appears cropped or too small. Please upload a full-size photo showing all 4 corners.'
+          );
+          err.statusCode = 400;
+          throw err;
+        }
+        const aspect = dim.width / dim.height;
+        if (aspect < 0.45 || aspect > 2.8) {
+          const err = new Error(
+            'The uploaded Aadhaar card (Back side) image appears cropped or cut off. Please upload the complete card.'
+          );
+          err.statusCode = 400;
+          throw err;
+        }
+      }
+    }
+
+    // 5. Blur / Clarity Check (ONLY for verified Aadhaar documents when image is blurry)
+    if (!frontIsPdf && frontBuffer) {
+      if (frontRes.confidence > 0 && frontRes.confidence < 35) {
+        const err = new Error(
+          'The uploaded Aadhaar card (Front side) image is blurry or unclear. Please upload a clear and sharp photo.'
+        );
+        err.statusCode = 400;
+        throw err;
+      }
+      if (frontText.trim().length < 15) {
+        const err = new Error(
+          'No clear details detected on Aadhaar card (Front side). The image may be blurry, cropped, or not an authentic document. Please upload a clear photo.'
+        );
+        err.statusCode = 400;
+        throw err;
+      }
+    }
+
+    if (!backIsPdf && backBuffer) {
+      if (backRes.confidence > 0 && backRes.confidence < 35) {
+        const err = new Error(
+          'The uploaded Aadhaar card (Back side) image is blurry or unclear. Please upload a clear and sharp photo.'
+        );
+        err.statusCode = 400;
+        throw err;
+      }
+      if (backText.trim().length < 15) {
+        const err = new Error(
+          'No clear details detected on Aadhaar card (Back side). The image may be blurry, cropped, or not an authentic document. Please upload a clear photo.'
+        );
+        err.statusCode = 400;
+        throw err;
+      }
+    }
+
+    // 6. Final verification checks
+    if (!hasFrontAadhaar) {
+      const err = new Error('Please upload a valid Aadhaar card (Front side). Only Aadhaar card is accepted. No other document is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    if (!hasBackAadhaar) {
+      const err = new Error('Please upload a valid Aadhaar card (Back side). Only Aadhaar card is accepted. No other document is accepted.');
       err.statusCode = 400;
       throw err;
     }
@@ -955,19 +1204,24 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
 
   // ── 3. DRIVING LICENSE VALIDATION (Images & PDFs) ───────────────────────
   if (expectedType === 'driving_license') {
-    // Cross-document rejection on front
-    if (frontHasPan) {
-      const err = new Error('PAN card detected on Front side. Please upload a valid Driving License (Front side).');
+    // Cross-document rejection on front and back
+    if (frontHasPan || backHasPan || isPanDocument(frontText) || isPanDocument(backText)) {
+      const err = new Error('PAN card detected. Only Driving License is accepted for this verification. No other document is accepted.');
       err.statusCode = 400;
       throw err;
     }
-    if (frontHasAadhaar) {
-      const err = new Error('Aadhaar card detected on Front side. Please upload a valid Driving License (Front side).');
+    if (frontHasAadhaar || backHasAadhaar || isAadhaarDocument(frontText) || isAadhaarDocument(backText)) {
+      const err = new Error('Aadhaar card detected. Only Driving License is accepted for this verification. No other document is accepted.');
       err.statusCode = 400;
       throw err;
     }
-    if (frontHasVoter) {
-      const err = new Error('Voter ID detected on Front side. Please upload a valid Driving License (Front side).');
+    if (frontHasVoter || backHasVoter || isVoterDocument(frontText) || isVoterDocument(backText)) {
+      const err = new Error('Voter ID detected. Only Driving License is accepted for this verification. No other document is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (isPassportDocument(frontText) || isPassportDocument(backText)) {
+      const err = new Error('Passport detected. Only Driving License is accepted for this verification. No other document is accepted.');
       err.statusCode = 400;
       throw err;
     }
@@ -981,24 +1235,7 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
 
     // Validate DL Front side only if sufficient text was extracted locally
     if (frontHasExtractableText && !frontHasDl && !isDlFrontDocument(frontText)) {
-      const err = new Error('Please upload a valid Driving License (Front side). Only Driving License is accepted.');
-      err.statusCode = 400;
-      throw err;
-    }
-
-    // Cross-document rejection on back
-    if (backHasPan) {
-      const err = new Error('PAN card detected on Back side. Please upload a valid Driving License (Back side).');
-      err.statusCode = 400;
-      throw err;
-    }
-    if (backHasAadhaar) {
-      const err = new Error('Aadhaar card detected on Back side. Please upload a valid Driving License (Back side).');
-      err.statusCode = 400;
-      throw err;
-    }
-    if (backHasVoter) {
-      const err = new Error('Voter ID detected on Back side. Please upload a valid Driving License (Back side).');
+      const err = new Error('Invalid document detected on Front side. Only Driving License is accepted for this verification. No other document is accepted.');
       err.statusCode = 400;
       throw err;
     }
@@ -1039,7 +1276,7 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
       (backText.includes('address') && (backText.includes('licens') || backText.includes('licenc') || backText.includes('authority') || backText.includes('holder') || backText.includes('rto')));
 
     if (backHasExtractableText && !hasAnyDlBackMarker) {
-      const err = new Error('Please upload a valid Driving License (Back side). Only Driving License is accepted.');
+      const err = new Error('Invalid document detected on Back side. Only Driving License is accepted for this verification. No other document is accepted.');
       err.statusCode = 400;
       throw err;
     }
@@ -1047,23 +1284,28 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
 
   // ── 4. PAN CARD VALIDATION (Images & PDFs) ──────────────────────────────
   if (expectedType === 'pan') {
-    if (frontHasAadhaar || backHasAadhaar) {
-      const err = new Error('Aadhaar card detected. Please upload a valid PAN card instead.');
+    if (frontHasAadhaar || backHasAadhaar || isAadhaarDocument(frontText) || isAadhaarDocument(backText)) {
+      const err = new Error('Aadhaar card detected. Only PAN card is accepted for this verification. No other document is accepted.');
       err.statusCode = 400;
       throw err;
     }
-    if (frontHasVoter || backHasVoter) {
-      const err = new Error('Voter ID detected. Please upload a valid PAN card instead.');
+    if (frontHasVoter || backHasVoter || isVoterDocument(frontText) || isVoterDocument(backText)) {
+      const err = new Error('Voter ID detected. Only PAN card is accepted for this verification. No other document is accepted.');
       err.statusCode = 400;
       throw err;
     }
-    if (frontHasDl || backHasDl) {
-      const err = new Error('Driving License detected. Please upload a valid PAN card instead.');
+    if (frontHasDl || backHasDl || isDlDocument(frontText) || isDlDocument(backText)) {
+      const err = new Error('Driving License detected. Only PAN card is accepted for this verification. No other document is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (isPassportDocument(frontText) || isPassportDocument(backText)) {
+      const err = new Error('Passport detected. Only PAN card is accepted for this verification. No other document is accepted.');
       err.statusCode = 400;
       throw err;
     }
     if (frontHasExtractableText && !frontHasPan) {
-      const err = new Error('Please upload a valid PAN card. Only PAN card is accepted.');
+      const err = new Error('Invalid document detected. Only PAN card is accepted for this verification. No other document is accepted.');
       err.statusCode = 400;
       throw err;
     }

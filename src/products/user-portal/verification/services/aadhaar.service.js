@@ -72,35 +72,83 @@ const extractAadhaarOcr = async ({ frontFile, documentFront, backFile, documentB
       maxContentLength: Infinity,
       timeout: 45000,
     });
+    console.log("🚀 ~ extractAadhaarOcr ~ response:", response)
+
+    if (response.data?.status === 'failed' || response.data?.error) {
+      const setuMsg =
+        response.data?.error?.message ||
+        response.data?.error?.detail ||
+        response.data?.message ||
+        (typeof response.data?.error === 'string' ? response.data.error : null) ||
+        JSON.stringify(response.data?.error || response.data);
+      const err = new Error(setuMsg || 'Setu Aadhaar verification failed');
+      err.statusCode = 400;
+      err.isSetuError = true;
+      err.setuData = response.data;
+      throw err;
+    }
 
     return response.data;
   } catch (error) {
-    const rawMsg =
-      error.response?.data?.message ||
-      error.response?.data?.error?.message ||
-      (typeof error.response?.data?.error === 'string' ? error.response.data.error : null) ||
-      error.message;
+    if (error.isSetuError) throw error;
+
+    const statusCode = error.response?.status || 500;
+    const setuResponseData = error.response?.data;
 
     logger.error('Setu Aadhaar OCR Gateway error', {
       correlationId,
       groupId,
-      statusCode: error.response?.status || 500,
-      gatewayResponse: error.response?.data || error.message,
+      statusCode,
+      gatewayResponse: setuResponseData || error.message,
     });
 
-    let friendlyMsg = rawMsg;
-    const lower = String(rawMsg).toLowerCase();
-    if (
-      lower.includes('non compliant') ||
-      lower.includes('quality standard') ||
-      lower.includes('not compliant') ||
-      lower.includes('document_quality')
-    ) {
-      friendlyMsg = 'Uploaded document is not a valid Aadhaar card. Please upload a clear photo of your original Aadhaar card (Front & Back).';
+    let setuErrorMessage = '';
+    if (setuResponseData) {
+      if (typeof setuResponseData === 'string') {
+        setuErrorMessage = setuResponseData;
+      } else if (setuResponseData.error) {
+        if (typeof setuResponseData.error === 'string') {
+          setuErrorMessage = setuResponseData.error;
+        } else if (typeof setuResponseData.error === 'object') {
+          setuErrorMessage =
+            setuResponseData.error.message ||
+            setuResponseData.error.detail ||
+            setuResponseData.error.description ||
+            setuResponseData.error.code ||
+            JSON.stringify(setuResponseData.error);
+        }
+      } else if (setuResponseData.message) {
+        setuErrorMessage = setuResponseData.message;
+        if (setuResponseData.detail) {
+          setuErrorMessage += `: ${setuResponseData.detail}`;
+        }
+      } else if (setuResponseData.detail) {
+        setuErrorMessage = setuResponseData.detail;
+      } else if (Array.isArray(setuResponseData.errors) && setuResponseData.errors.length > 0) {
+        setuErrorMessage = setuResponseData.errors
+          .map((e) => e.message || e.detail || (typeof e === 'string' ? e : JSON.stringify(e)))
+          .join(', ');
+      } else {
+        setuErrorMessage = JSON.stringify(setuResponseData);
+      }
+    } else {
+      setuErrorMessage = error.message || 'Setu gateway error';
     }
 
-    const err = new Error(friendlyMsg || 'Invalid Aadhaar card. Please upload a valid Aadhaar card.');
-    err.statusCode = 400;
+    const lowerMsg = String(setuErrorMessage).toLowerCase();
+    let finalMessage = setuErrorMessage;
+    if (lowerMsg.includes('blur') || lowerMsg.includes('unclear')) {
+      finalMessage = 'The uploaded Aadhaar card image is blurry or unclear. Please upload a clear and sharp photo.';
+    } else if (lowerMsg.includes('crop') || lowerMsg.includes('cut off') || lowerMsg.includes('corner')) {
+      finalMessage = 'The uploaded Aadhaar card image appears cropped or cut off. Please upload full card showing all 4 corners.';
+    } else if (lowerMsg.includes('unsupported') || lowerMsg.includes('invalid_document') || lowerMsg.includes('not compliant') || lowerMsg.includes('non compliant')) {
+      finalMessage = 'Uploaded document is not a valid Aadhaar card. Only authentic Aadhaar card is accepted. No other document is accepted.';
+    }
+
+    const err = new Error(finalMessage);
+    err.statusCode = statusCode;
+    err.isSetuError = true;
+    err.setuData = setuResponseData;
     throw err;
   }
 };
@@ -178,17 +226,18 @@ const processAadhaarVerificationFlow = async ({
   const actualBack = backFile || (Array.isArray(documentBack) ? documentBack[0] : documentBack);
 
   if (!actualFront || !actualFront.buffer) {
-    const error = new Error('Please upload a valid Aadhaar card (Front side). Only Aadhaar card is accepted.');
-    error.statusCode = 400;
-    throw error;
-  }
-  if (!actualBack || !actualBack.buffer) {
-    const error = new Error('Please upload a valid Aadhaar card (Back side). Only Aadhaar card is accepted.');
+    const error = new Error('Please upload a valid Aadhaar card (Front side). Front image is required.');
     error.statusCode = 400;
     throw error;
   }
 
-  // Pre-validate that uploaded images match Aadhaar
+  if (!actualBack || !actualBack.buffer) {
+    const error = new Error('Please upload a valid Aadhaar card (Back side). Back image is required.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Pre-validate that uploaded images match Aadhaar (Front in front, Back in back, not identical, not other doc, not blur, not crop)
   await validateDocumentConsistency({
     expectedType: 'aadhaar',
     frontBuffer: actualFront.buffer,
@@ -217,8 +266,16 @@ const processAadhaarVerificationFlow = async ({
   });
 
   const ocrData = gatewayResponse?.data;
+  console.log("🚀 ~ processAadhaarVerificationFlow ~ ocrData:", ocrData)
   if (!ocrData || (!ocrData.aadhaarNumber && !ocrData.documentNumber && !ocrData.name)) {
-    throw new Error('Setu Gateway: Could not extract valid Aadhaar details from the image. Please upload a clear photo.');
+    const errorMsg =
+      ocrData && ocrData.isScanned === false
+        ? 'Aadhaar OCR scan failed. The document image may be blurry, cropped, or unreadable. Please upload a clear photo of your Aadhaar card.'
+        : 'Could not extract valid Aadhaar details from the image. Please upload a clear, sharp photo.';
+    const error = new Error(errorMsg);
+    error.statusCode = 400;
+    error.isSetuError = true;
+    throw error;
   }
 
   const savedRecord = await saveAadhaarRecord({

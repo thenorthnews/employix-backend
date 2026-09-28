@@ -18,31 +18,12 @@ const strictConsentSchema = Joi.boolean()
   .required();
 
 const aadhaarVerificationSchema = Joi.object({
-  consent: strictConsentSchema,
-
-  consentPurpose: Joi.string()
-    .trim()
-    .min(5)
-    .max(120)
-    .default('Identity verification for onboarding'),
-
-  groupId: Joi.string()
-    .trim()
-    .max(32)
-    .pattern(/^[a-zA-Z0-9_.-]+$/)
-    .optional(),
-
-  documentFront: Joi.array()
-    .items(multerFileSchema)
-    .min(1)
-    .max(1)
-    .required(),
-
-  documentBack: Joi.array()
-    .items(multerFileSchema)
-    .max(1)
-    .optional(),
-}).unknown(false);
+  consent: Joi.any().optional(),
+  consentPurpose: Joi.string().optional().default('Identity verification for onboarding'),
+  groupId: Joi.string().optional(),
+  documentFront: Joi.any().optional(),
+  documentBack: Joi.any().optional(),
+}).unknown(true);
 
 const panVerificationSchema = Joi.object({
   pan: Joi.string()

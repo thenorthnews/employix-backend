@@ -112,6 +112,14 @@ const resolveErrorInfo = (err, defaultMessage) => {
       ? rawMessage
       : defaultMessage;
 
+  // For Aadhaar verification, preserve exact Setu error response
+  if (err.isSetuError || String(defaultMessage || '').toLowerCase().includes('aadhaar')) {
+    return {
+      statusCode,
+      message: err.message || message,
+    };
+  }
+
   const lowerMsg = String(message).toLowerCase();
   const lowerDef = String(defaultMessage || '').toLowerCase();
   if (

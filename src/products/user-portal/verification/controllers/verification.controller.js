@@ -169,6 +169,10 @@ const verifyAadhaarDocument = async (req, res) => {
       return badRequest(res, 'Please upload a valid front image of your Aadhaar card');
     }
 
+    if (!backFile || !backFile.buffer) {
+      return badRequest(res, 'Please upload a valid back image of your Aadhaar card');
+    }
+
     const result = await processAadhaarVerificationFlow({
       userId,
       correlationId,

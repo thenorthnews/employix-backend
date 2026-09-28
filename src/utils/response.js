@@ -49,11 +49,12 @@ function forbidden(res, message = 'Forbidden') {
     });
 }
 
-function serverError(res, err) {
+function serverError(res, err = 'Server error') {
+    const message = typeof err === 'string' ? err : (err?.message || 'Server error');
     return res.status(500).json({
         success: false,
         statusCode: 500,
-        message: err.message || 'Server error'
+        message
     });
 }
 

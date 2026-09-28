@@ -2,9 +2,11 @@ const axios = require('axios');
 const FormData = require('form-data');
 const { Readable } = require('stream');
 const Identification = require('../../models/identification.model');
+const User = require('../../../../common/users/user.model');
 const logger = require('../../../../utils/logger');
 const {
   extractFormattedAddress,
+  parseStructuredAddress,
   parseDocumentDob,
   standardizeGender,
   generateSafeGroupId,
@@ -65,20 +67,9 @@ const verifyVoterIdRecord = async ({ userId, number, consentPurpose, correlation
     }
 
     const voterData = responseData.data;
-    const formattedAddressText = extractFormattedAddress(voterData.address);
+    const addressPayload = parseStructuredAddress(voterData.address, voterData.splitAddress);
     const parsedDob = parseDocumentDob(voterData.dob);
     const standardizedGender = standardizeGender(voterData.gender);
-
-    const split = typeof voterData.address === 'object' && voterData.address !== null ? voterData.address : {};
-
-    const addressPayload = {
-      fullAddress: formattedAddressText,
-      streetAddress: split.streetAddress || split.street || null,
-      city: split.city || null,
-      district: split.district || null,
-      state: split.state || null,
-      pincode: split.pincode || split.postalCode || null,
-    };
 
     const updatedRecord = await Identification.findOneAndUpdate(
       { userId, documentType: 'voter_id' },
@@ -104,6 +95,20 @@ const verifyVoterIdRecord = async ({ userId, number, consentPurpose, correlation
       { upsert: true, new: true }
     );
 
+    // Sync to User collection
+    const existingUser = await User.findById(userId);
+    const userUpdates = {};
+    if (!existingUser?.currentAddress?.fullAddress && addressPayload?.fullAddress) {
+      userUpdates.currentAddress = addressPayload;
+    }
+    if (!existingUser?.address && addressPayload?.fullAddress) {
+      userUpdates.address = addressPayload.fullAddress;
+      userUpdates.city = addressPayload.city || '';
+      userUpdates.state = addressPayload.state || '';
+      userUpdates.pincode = addressPayload.pincode || '';
+    }
+    await User.findByIdAndUpdate(userId, { $set: userUpdates });
+
     logger.info('Voter ID details successfully persisted', {
       correlationId,
       userId,
@@ -119,6 +124,7 @@ const verifyVoterIdRecord = async ({ userId, number, consentPurpose, correlation
       age: updatedRecord.age,
       gender: updatedRecord.gender,
       address: updatedRecord.address,
+      currentAddress: updatedRecord.address,
       groupId: updatedRecord.groupId,
       verifiedAt: updatedRecord.verifiedAt,
     };
@@ -169,6 +175,8 @@ const extractVoterOcrData = async ({ userId, frontFile, backFile, consentPurpose
     expectedType: 'voter_id',
     frontBuffer: actualFront.buffer,
     backBuffer: actualBack.buffer,
+    frontFilename: actualFront.originalname || '',
+    backFilename: actualBack.originalname || '',
   });
 
   const existingRecord = await Identification.findOne(
@@ -232,25 +240,7 @@ const extractVoterOcrData = async ({ userId, frontFile, backFile, consentPurpose
     const rawCardNumber = ocrData.epicNumber || ocrData.voterIdNumber || ocrData.number || ocrData.idNumber || ocrData.voter_id;
     const maskedNumber = rawCardNumber ? maskVoterId(rawCardNumber) : null;
 
-    const fullAddressText = ocrData.address ? extractFormattedAddress(ocrData.address) : (ocrData.formattedAddress || null);
-    const split = ocrData.splitAddress || (typeof ocrData.address === 'object' && ocrData.address !== null ? ocrData.address : {});
-
-    const addressPayload = {
-      fullAddress: fullAddressText || extractFormattedAddress(split) || null,
-      streetAddress: split.streetAddress?.trim() || split.street?.trim() || split.houseNumber?.trim() || null,
-      city: split.city?.trim() || null,
-      district: split.district?.trim() || null,
-      state: split.state?.trim() || null,
-      pincode: split.pincode?.trim() || split.postalCode?.trim() || split.pin?.trim() || null,
-    };
-
-    if (!addressPayload.fullAddress) {
-      const parts = [addressPayload.streetAddress, addressPayload.city, addressPayload.district, addressPayload.state, addressPayload.pincode].filter(Boolean);
-      if (parts.length > 0) {
-        addressPayload.fullAddress = parts.join(', ');
-      }
-    }
-
+    const addressPayload = parseStructuredAddress(ocrData.address, ocrData.splitAddress);
     const parsedDob = ocrData.dob ? parseDocumentDob(ocrData.dob) : null;
     const standardizedGender = ocrData.gender ? standardizeGender(ocrData.gender) : null;
 
@@ -279,6 +269,20 @@ const extractVoterOcrData = async ({ userId, frontFile, backFile, consentPurpose
       { upsert: true, new: true }
     );
 
+    // Sync to User collection
+    const existingUser = await User.findById(userId);
+    const userUpdates = {};
+    if (!existingUser?.currentAddress?.fullAddress && addressPayload?.fullAddress) {
+      userUpdates.currentAddress = addressPayload;
+    }
+    if (!existingUser?.address && addressPayload?.fullAddress) {
+      userUpdates.address = addressPayload.fullAddress;
+      userUpdates.city = addressPayload.city || '';
+      userUpdates.state = addressPayload.state || '';
+      userUpdates.pincode = addressPayload.pincode || '';
+    }
+    await User.findByIdAndUpdate(userId, { $set: userUpdates });
+
     logger.info('Voter ID OCR processed and saved', {
       correlationId,
       userId,
@@ -294,6 +298,7 @@ const extractVoterOcrData = async ({ userId, frontFile, backFile, consentPurpose
       age: updatedRecord.age,
       gender: updatedRecord.gender,
       address: updatedRecord.address,
+      currentAddress: updatedRecord.address,
       groupId: updatedRecord.groupId,
       verifiedAt: updatedRecord.verifiedAt,
     };

@@ -39,7 +39,7 @@ const {
   deleteCertificationService,
 } = require('../services/education.service');
 
-const { resolveErrorInfo, calculateEmployixScore, calculateKycStatus } = require('../../../../helpers/documentHelper');
+const { resolveErrorInfo, calculateEmployixScore, calculateKycStatus, parseStructuredAddress } = require('../../../../helpers/documentHelper');
 
 const getEducationState = async (userId) => {
   const qualCount = await Qualification.countDocuments({ userId });
@@ -1440,13 +1440,23 @@ const getKycStatus = async (req, res) => {
           currentScore,
           tier: currentScore >= 80 ? 'Platinum Tier' : currentScore >= 60 ? 'Gold Tier' : currentScore >= 20 ? 'Silver Tier' : 'Base Profile',
         },
+        currentAddress:
+          user?.currentAddress?.fullAddress
+            ? user.currentAddress
+            : (aadhaarRecord?.address?.fullAddress
+                ? aadhaarRecord.address
+                : (voterRecord?.address?.fullAddress
+                    ? voterRecord.address
+                    : (dlRecord?.address?.fullAddress
+                        ? dlRecord.address
+                        : parseStructuredAddress(user?.address)))),
         aadhaarData: aadhaarRecord
           ? {
               maskedDocumentNumber: aadhaarRecord.maskedDocumentNumber,
               name: aadhaarRecord.name,
               dob: aadhaarRecord.dob,
               gender: aadhaarRecord.gender,
-              address: aadhaarRecord.address,
+              address: parseStructuredAddress(aadhaarRecord.address?.fullAddress || aadhaarRecord.address, aadhaarRecord.address),
               verificationMethod: aadhaarRecord.verificationMethod || 'ocr_scan',
               scoreEarned: aadhaarRecord.scoreEarned || 20,
               verifiedAt: aadhaarRecord.verifiedAt,
@@ -1459,7 +1469,7 @@ const getKycStatus = async (req, res) => {
               dob: voterRecord.dob,
               age: voterRecord.age,
               gender: voterRecord.gender,
-              address: voterRecord.address,
+              address: parseStructuredAddress(voterRecord.address?.fullAddress || voterRecord.address, voterRecord.address),
               verificationMethod: voterRecord.verificationMethod || 'ocr_scan',
               scoreEarned: 20,
               verifiedAt: voterRecord.verifiedAt,
@@ -1473,7 +1483,7 @@ const getKycStatus = async (req, res) => {
               dateOfExpiry: dlRecord.dateOfExpiry,
               vehicleTypes: dlRecord.vehicleTypes,
               validity: dlRecord.validity,
-              address: dlRecord.address,
+              address: parseStructuredAddress(dlRecord.address?.fullAddress || dlRecord.address, dlRecord.address),
               verificationMethod: 'ocr_scan',
               scoreEarned: 5,
               verifiedAt: dlRecord.verifiedAt,

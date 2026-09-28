@@ -2,6 +2,8 @@ const axios = require('axios');
 const FormData = require('form-data');
 const logger = require('../../../../utils/logger');
 const Identification = require('../../models/identification.model');
+const User = require('../../../../common/users/user.model');
+const { parseStructuredAddress } = require('../../../../helpers/documentHelper');
 const { validateDocumentConsistency } = require('../../../../helpers/documentClassifier');
 
 const generateSafeGroupId = () => `grp_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
@@ -39,6 +41,8 @@ const extractDlOcrData = async ({
     expectedType: 'driving_license',
     frontBuffer: frontFile.buffer,
     backBuffer: backFile.buffer,
+    frontFilename: frontFile.originalname || '',
+    backFilename: backFile.originalname || '',
   });
 
   const existingRecord = await Identification.findOne(
@@ -139,13 +143,7 @@ const extractDlOcrData = async ({
       : `******${rawDlNumber}`;
 
 
-  const splitAddr = dlData.splitAddress || {};
-  const fullAddress =
-    dlData.address ||
-    [splitAddr.streetAddress, splitAddr.city, splitAddr.district, splitAddr.state, splitAddr.pincode]
-      .filter(Boolean)
-      .join(', ') ||
-    null;
+  const addressPayload = parseStructuredAddress(dlData.address, dlData.splitAddress);
 
   // 5. Identification Collection Upsert with purely dynamic data
   const savedData = await Identification.findOneAndUpdate(
@@ -165,14 +163,7 @@ const extractDlOcrData = async ({
           nonTransport: parseDateString(dlData.validity?.NT) || null,
           transport: parseDateString(dlData.validity?.T) || null,
         },
-        address: {
-          fullAddress,
-          streetAddress: splitAddr.streetAddress || null,
-          city: splitAddr.city || null,
-          district: splitAddr.district || null,
-          state: splitAddr.state || null,
-          pincode: splitAddr.pincode || null,
-        },
+        address: addressPayload,
         isScanned: Boolean(dlData.isScanned !== undefined ? dlData.isScanned : true),
         verificationStatus: 'verified',
         failureReason: null,
@@ -183,6 +174,20 @@ const extractDlOcrData = async ({
     },
     { upsert: true, new: true }
   );
+
+  // Sync to User collection
+  const existingUser = await User.findById(userId);
+  const userUpdates = {};
+  if (!existingUser?.currentAddress?.fullAddress && addressPayload?.fullAddress) {
+    userUpdates.currentAddress = addressPayload;
+  }
+  if (!existingUser?.address && addressPayload?.fullAddress) {
+    userUpdates.address = addressPayload.fullAddress;
+    userUpdates.city = addressPayload.city || '';
+    userUpdates.state = addressPayload.state || '';
+    userUpdates.pincode = addressPayload.pincode || '';
+  }
+  await User.findByIdAndUpdate(userId, { $set: userUpdates });
 
   return savedData;
 };

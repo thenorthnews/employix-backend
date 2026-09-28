@@ -6,7 +6,7 @@ const Qualification = require('../../products/user-portal/models/qualification.m
 const Certification = require('../../products/user-portal/models/certification.model');
 const Referral = require('../../products/user-portal/models/referral.model');
 const { uploadImage } = require('../uploadImage/uploadMulture');
-const { calculateEmployixScore, calculateEmployeeScore, calculateKycStatus } = require('../../helpers/documentHelper');
+const { calculateEmployixScore, calculateEmployeeScore, calculateKycStatus, parseStructuredAddress } = require('../../helpers/documentHelper');
 
 async function getCurrentUserService(userId, req = null) {
   const user = await User.findById(userId).select('-password -otp -otpExpiry');
@@ -32,8 +32,13 @@ async function getCurrentUserService(userId, req = null) {
     const dlRecord = records.find((r) => r.documentType === 'driving_license');
 
     if (aadhaarRecord) {
+      const parsedAadhaarAddr = parseStructuredAddress(aadhaarRecord.address?.fullAddress || aadhaarRecord.address, aadhaarRecord.address);
       aadhaarData = {
         maskedDocumentNumber: aadhaarRecord.maskedDocumentNumber || 'XXXX-XXXX-8921',
+        name: aadhaarRecord.name,
+        dob: aadhaarRecord.dob,
+        gender: aadhaarRecord.gender,
+        address: parsedAadhaarAddr,
         verificationMethod: aadhaarRecord.verificationMethod || 'ocr_scan',
         scoreEarned: aadhaarRecord.scoreEarned || 20,
         verifiedAt: aadhaarRecord.verifiedAt,
@@ -52,10 +57,14 @@ async function getCurrentUserService(userId, req = null) {
     }
 
     if (voterRecord) {
+      const parsedVoterAddr = parseStructuredAddress(voterRecord.address?.fullAddress || voterRecord.address, voterRecord.address);
       voterData = {
         maskedDocumentNumber: voterRecord.maskedDocumentNumber || 'WXD1****92',
         name: voterRecord.name,
-        address: voterRecord.address,
+        dob: voterRecord.dob,
+        age: voterRecord.age,
+        gender: voterRecord.gender,
+        address: parsedVoterAddr,
         verificationMethod: voterRecord.verificationMethod || 'manual_number',
         scoreEarned: 20,
         verifiedAt: voterRecord.verifiedAt,
@@ -63,6 +72,7 @@ async function getCurrentUserService(userId, req = null) {
     }
 
     if (dlRecord) {
+      const parsedDlAddr = parseStructuredAddress(dlRecord.address?.fullAddress || dlRecord.address, dlRecord.address);
       dlData = {
         maskedDocumentNumber: dlRecord.maskedDocumentNumber || 'DL04******2345',
         name: dlRecord.name,
@@ -70,7 +80,7 @@ async function getCurrentUserService(userId, req = null) {
         dateOfExpiry: dlRecord.dateOfExpiry,
         vehicleTypes: dlRecord.vehicleTypes,
         validity: dlRecord.validity,
-        address: dlRecord.address,
+        address: parsedDlAddr,
         verificationMethod: dlRecord.provider || 'setu_dl_ocr',
         scoreEarned: 5,
         verifiedAt: dlRecord.verifiedAt,
@@ -159,26 +169,31 @@ async function getCurrentUserService(userId, req = null) {
     employixId = `#EMP-${code}-IN`;
   }
 
-  // Sync address & status if voterRecord has address and user has none
-  const resolvedAddress = user.address || voterData?.address || '';
-  if (
-    !user.employixId ||
-    (!user.address && voterData?.address) ||
-    user.employixScore !== currentScore ||
-    user.kycStatus !== kycState ||
-    user.dlStatus !== (dlDone ? 1 : 0)
-  ) {
-    await User.findByIdAndUpdate(userId, {
-      $set: {
-        employixId,
-        address: resolvedAddress,
-        employixScore: currentScore,
-        kycStatus: kycState,
-        employmentStatus: empDone ? 1 : 0,
-        dlStatus: dlDone ? 1 : 0,
-      },
-    });
-  }
+  // Resolve currentAddress: prioritize existing currentAddress, then Aadhaar, Voter, DL, or user profile address
+  let currentAddress =
+    user.currentAddress?.fullAddress
+      ? user.currentAddress
+      : (aadhaarData?.address?.fullAddress
+          ? aadhaarData.address
+          : (voterData?.address?.fullAddress
+              ? voterData.address
+              : (dlData?.address?.fullAddress
+                  ? dlData.address
+                  : parseStructuredAddress(user.address))));
+
+  const resolvedAddressString = currentAddress?.fullAddress || user.address || '';
+
+  await User.findByIdAndUpdate(userId, {
+    $set: {
+      employixId,
+      address: resolvedAddressString,
+      currentAddress,
+      employixScore: currentScore,
+      kycStatus: kycState,
+      employmentStatus: empDone ? 1 : 0,
+      dlStatus: dlDone ? 1 : 0,
+    },
+  });
 
   const userObj = user.toObject();
   delete userObj.image;
@@ -193,7 +208,8 @@ async function getCurrentUserService(userId, req = null) {
     ...userObj,
     profileImage: resolvedProfileImage,
     employixId,
-    address: resolvedAddress,
+    address: resolvedAddressString,
+    currentAddress,
     employixScore: currentScore,
     kycStatus: kycState,
     employmentStatus: empDone ? 1 : 0,

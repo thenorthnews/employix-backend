@@ -40,21 +40,157 @@ const extractFormattedAddress = (addressObj) => {
   if (!addressObj) return null;
   if (typeof addressObj === 'string') return addressObj.trim();
 
-  if (addressObj.combinedAddress) {
+  if (addressObj.fullAddress && typeof addressObj.fullAddress === 'string') {
+    return addressObj.fullAddress.trim();
+  }
+  if (addressObj.formattedAddress && typeof addressObj.formattedAddress === 'string') {
+    return addressObj.formattedAddress.trim();
+  }
+  if (addressObj.combinedAddress && typeof addressObj.combinedAddress === 'string') {
     return addressObj.combinedAddress.trim();
+  }
+  if (addressObj.rawAddress && typeof addressObj.rawAddress === 'string') {
+    return addressObj.rawAddress.trim();
   }
 
   const parts = [
-    addressObj.houseNumber || addressObj.building,
+    addressObj.houseNumber || addressObj.building || addressObj.house || addressObj.careOf,
     addressObj.street || addressObj.streetAddress,
     addressObj.locality || addressObj.area,
     addressObj.landmark,
-    addressObj.city || addressObj.district,
+    addressObj.city || addressObj.district || addressObj.vtc || addressObj.subdist,
     addressObj.state,
     addressObj.pincode || addressObj.postalCode,
   ].filter(Boolean);
 
   return parts.length ? parts.join(', ') : null;
+};
+
+const INDIAN_STATES = [
+  'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chhattisgarh', 'Goa', 'Gujarat', 'Haryana',
+  'Himachal Pradesh', 'Jharkhand', 'Karnataka', 'Kerala', 'Madhya Pradesh', 'Maharashtra', 'Manipur',
+  'Meghalaya', 'Mizoram', 'Nagaland', 'Odisha', 'Punjab', 'Rajasthan', 'Sikkim', 'Tamil Nadu',
+  'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal', 'Delhi', 'New Delhi',
+  'Jammu and Kashmir', 'Ladakh', 'Chandigarh', 'Puducherry', 'Andaman and Nicobar Islands', 'Dadra and Nagar Haveli', 'Daman and Diu'
+];
+
+/**
+ * Intelligent Structured Address Parser
+ * Converts full address strings or partial objects into { fullAddress, streetAddress, city, district, state, pincode }
+ * Ensures streetAddress, city, district, state, pincode are populated whenever possible, avoiding nulls.
+ */
+const parseStructuredAddress = (rawAddress, splitAddress = {}) => {
+  if (!rawAddress && (!splitAddress || Object.keys(splitAddress).length === 0)) {
+    return {
+      fullAddress: null,
+      streetAddress: null,
+      city: null,
+      district: null,
+      state: null,
+      pincode: null,
+    };
+  }
+
+  const split = typeof splitAddress === 'object' && splitAddress !== null ? { ...splitAddress } : {};
+  let rawStr = '';
+
+  if (typeof rawAddress === 'string') {
+    rawStr = rawAddress.trim();
+  } else if (rawAddress && typeof rawAddress === 'object') {
+    rawStr =
+      rawAddress.fullAddress ||
+      rawAddress.formattedAddress ||
+      rawAddress.combinedAddress ||
+      rawAddress.rawAddress ||
+      '';
+    Object.keys(rawAddress).forEach((k) => {
+      if (split[k] === undefined && typeof rawAddress[k] === 'string' && rawAddress[k].trim()) {
+        split[k] = rawAddress[k].trim();
+      }
+    });
+  }
+
+  // 1. Pincode
+  let pincode = split.pincode || split.postalCode || split.pin || null;
+  if (!pincode && rawStr) {
+    const pinMatch = rawStr.match(/\b([1-9][0-9]{5})\b/);
+    if (pinMatch) {
+      pincode = pinMatch[1];
+    }
+  }
+
+  // 2. State
+  let state = split.state || null;
+  if (!state && rawStr) {
+    const lowerRaw = rawStr.toLowerCase();
+    for (const st of INDIAN_STATES) {
+      const regex = new RegExp(`\\b${st.toLowerCase()}\\b`, 'i');
+      if (regex.test(lowerRaw)) {
+        state = st;
+        break;
+      }
+    }
+  }
+
+  // 3. City & District
+  let city = split.city || split.vtc || split.town || split.village || null;
+  let district = split.district || split.subdist || split.subDistrict || null;
+
+  // 4. Street / Building / House / Locality
+  let streetAddress =
+    split.streetAddress ||
+    [split.houseNumber || split.house || split.building || split.careOf, split.street, split.locality || split.area || split.landmark]
+      .filter(Boolean)
+      .join(', ') ||
+    null;
+
+  // If we have rawStr and components are missing, parse from rawStr tokens
+  if (rawStr) {
+    let cleanText = rawStr.replace(/[-–—]?\s*\b[1-9][0-9]{5}\b/g, '').trim();
+    let parts = cleanText
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean);
+
+    if (state && parts.length > 0) {
+      const lastPart = parts[parts.length - 1];
+      if (lastPart.toLowerCase().includes(state.toLowerCase())) {
+        parts.pop();
+      }
+    }
+
+    if (!city && parts.length > 0) {
+      city = parts.pop();
+    }
+    if (!district) {
+      district = city || (parts.length > 0 ? parts[parts.length - 1] : null);
+    }
+
+    if (!streetAddress && parts.length > 0) {
+      streetAddress = parts.join(', ');
+    }
+  }
+
+  if (!city && district) city = district;
+  if (!district && city) district = city;
+  if (!streetAddress && (rawStr || city)) {
+    streetAddress = rawStr || city;
+  }
+
+  const fullAddress =
+    rawStr ||
+    [streetAddress, city, district !== city ? district : null, state, pincode ? `- ${pincode}` : null]
+      .filter(Boolean)
+      .join(', ');
+
+  return {
+    fullAddress: fullAddress || null,
+    streetAddress: streetAddress || null,
+    city: city || null,
+    district: district || null,
+    state: state || null,
+    pincode: pincode || null,
+  };
 };
 
 /**
@@ -293,6 +429,7 @@ module.exports = {
   maskDocumentNumber,
   maskVoterId,
   extractFormattedAddress,
+  parseStructuredAddress,
   parseDocumentDob,
   standardizeGender,
   generateSafeGroupId,

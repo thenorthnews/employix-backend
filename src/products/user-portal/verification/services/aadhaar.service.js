@@ -8,6 +8,7 @@ const Certification = require('../../models/certification.model');
 const {
   maskDocumentNumber,
   extractFormattedAddress,
+  parseStructuredAddress,
   parseDocumentDob,
   standardizeGender,
   generateSafeGroupId,
@@ -166,20 +167,9 @@ const saveAadhaarRecord = async ({
 }) => {
   const rawDocNumber = ocrData.aadhaarNumber || ocrData.documentNumber || ocrData.number;
   const maskedNumber = maskDocumentNumber(rawDocNumber);
-  const formattedAddressText = extractFormattedAddress(ocrData.address);
+  const addressPayload = parseStructuredAddress(ocrData.address, ocrData.splitAddress);
   const parsedDob = parseDocumentDob(ocrData.dob);
   const standardizedGender = standardizeGender(ocrData.gender);
-
-  const split = typeof ocrData.address === 'object' && ocrData.address !== null ? ocrData.address : {};
-
-  const addressPayload = {
-    fullAddress: formattedAddressText,
-    streetAddress: split.street || split.streetAddress || null,
-    city: split.city || null,
-    district: split.district || null,
-    state: split.state || null,
-    pincode: split.pincode || split.postalCode || null,
-  };
 
   const updatePayload = {
     userId,
@@ -202,11 +192,27 @@ const saveAadhaarRecord = async ({
     verifiedAt: new Date(),
   };
 
-  return await Identification.findOneAndUpdate(
+  const savedRecord = await Identification.findOneAndUpdate(
     { userId, documentType: 'aadhaar' },
     updatePayload,
     { upsert: true, new: true }
   );
+
+  // Sync to User collection
+  const existingUser = await User.findById(userId);
+  const userUpdates = {};
+  if (!existingUser?.currentAddress?.fullAddress && addressPayload?.fullAddress) {
+    userUpdates.currentAddress = addressPayload;
+  }
+  if (!existingUser?.address && addressPayload?.fullAddress) {
+    userUpdates.address = addressPayload.fullAddress;
+    userUpdates.city = addressPayload.city || '';
+    userUpdates.state = addressPayload.state || '';
+    userUpdates.pincode = addressPayload.pincode || '';
+  }
+  await User.findByIdAndUpdate(userId, { $set: userUpdates });
+
+  return savedRecord;
 };
 
 /**
@@ -242,6 +248,8 @@ const processAadhaarVerificationFlow = async ({
     expectedType: 'aadhaar',
     frontBuffer: actualFront.buffer,
     backBuffer: actualBack.buffer,
+    frontFilename: actualFront.originalname || '',
+    backFilename: actualBack.originalname || '',
   });
 
   const existingRecord = await Identification.findOne(
@@ -301,6 +309,7 @@ const processAadhaarVerificationFlow = async ({
     dob: savedRecord.dob,
     gender: savedRecord.gender,
     address: savedRecord.address,
+    currentAddress: savedRecord.address,
     verifiedAt: savedRecord.verifiedAt,
   };
 };

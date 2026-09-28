@@ -1096,6 +1096,28 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
     const hasFrontAadhaar = frontHasAadhaar || isAadhaarFrontDocument(frontText);
     const hasBackAadhaar = backHasAadhaar || isAadhaarBackDocument(backText);
 
+    // If Back side is blurry or unreadable (low confidence or details couldn't be extracted)
+    if (!backIsPdf && backBuffer) {
+      if ((backRes.confidence > 0 && backRes.confidence < 35) || (backText.trim().length < 20 && !hasBackAadhaar)) {
+        const err = new Error(
+          'The uploaded Aadhaar card (Back side) image is blurry or unclear. Please upload a clear and sharp photo.'
+        );
+        err.statusCode = 400;
+        throw err;
+      }
+    }
+
+    // If Front side is blurry or unreadable (low confidence or details couldn't be extracted)
+    if (!frontIsPdf && frontBuffer) {
+      if ((frontRes.confidence > 0 && frontRes.confidence < 35) || (frontText.trim().length < 20 && !hasFrontAadhaar)) {
+        const err = new Error(
+          'The uploaded Aadhaar card (Front side) image is blurry or unclear. Please upload a clear and sharp photo.'
+        );
+        err.statusCode = 400;
+        throw err;
+      }
+    }
+
     // If both slots contain clear text but neither matches Aadhaar
     if (!hasFrontAadhaar && !hasBackAadhaar && (frontText.trim().length >= 10 || backText.trim().length >= 10)) {
       const err = new Error('Invalid document detected. Only Aadhaar card is accepted for this verification. No other document is accepted.');
@@ -1103,29 +1125,33 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
       throw err;
     }
 
-    // If Front has extractable text and is not Aadhaar Front
+    // If Front has extractable text and is not Aadhaar Front (unclear / blurry or not authentic)
     if (frontHasExtractableText && !hasFrontAadhaar) {
-      const err = new Error('Invalid document detected on Front side. Only Aadhaar card is accepted for this verification. No other document is accepted.');
+      const err = new Error(
+        'The uploaded Aadhaar card (Front side) image is blurry or unclear. Please upload a clear and sharp photo.'
+      );
       err.statusCode = 400;
       throw err;
     }
 
-    // If Back has extractable text and is not Aadhaar Back
+    // If Back has extractable text and is not Aadhaar Back (unclear / blurry or not authentic)
     if (backHasExtractableText && !hasBackAadhaar) {
-      const err = new Error('Invalid document detected on Back side. Only Aadhaar card is accepted for this verification. No other document is accepted.');
+      const err = new Error(
+        'The uploaded Aadhaar card (Back side) image is blurry or unclear. Please upload a clear and sharp photo.'
+      );
       err.statusCode = 400;
       throw err;
     }
 
     // 4. Final verification checks
     if (!hasFrontAadhaar) {
-      const err = new Error('Please upload a valid Aadhaar card (Front side). Only Aadhaar card is accepted. No other document is accepted.');
+      const err = new Error('The uploaded Aadhaar card (Front side) image is blurry or unclear. Please upload a clear and sharp photo.');
       err.statusCode = 400;
       throw err;
     }
 
     if (!hasBackAadhaar) {
-      const err = new Error('Please upload a valid Aadhaar card (Back side). Only Aadhaar card is accepted. No other document is accepted.');
+      const err = new Error('The uploaded Aadhaar card (Back side) image is blurry or unclear. Please upload a clear and sharp photo.');
       err.statusCode = 400;
       throw err;
     }

@@ -541,23 +541,23 @@ function isVoterDocument(text) {
 function isVoterFrontDocument(text) {
   if (!text) return false;
   const t = text.toLowerCase();
+  if (t.includes('uidai') || t.includes('aadhaar') || t.includes('aadhar') || t.includes('आधार') || t.includes('pan card') || t.includes('income tax department')) {
+    return false;
+  }
   const normalized = t.replace(/\s+/g, ' ');
 
   const hasFrontKeyword =
     normalized.includes('elector photo identity') ||
-    (t.includes('elector') && t.includes('identity')) ||
+    normalized.includes('elector identity') ||
     t.includes('मतदाता पहचान पत्र') ||
     normalized.includes("elector's name") ||
     normalized.includes('elector name') ||
-    normalized.includes('election commission') ||
-    (t.includes('election') && t.includes('commission')) ||
-    normalized.includes('bharat nirvachan') ||
-    t.includes('nirvachan aayog') ||
+    normalized.includes('election commission of india') ||
     t.includes('भारत निर्वाचन आयोग');
 
-  const hasEpicRegex = /\b[a-z]{3}\d{7}\b/i.test(t);
   const hasGender = t.includes('male') || t.includes('female') || t.includes('लिंग') || t.includes('gender') || t.includes('sex');
   const hasDobOrAge = t.includes('dob') || t.includes('date of birth') || t.includes('जन्म तिथि') || t.includes('age') || t.includes('आयु');
+  const hasFather = t.includes("father's name") || t.includes('father name') || t.includes('पिता का नाम') || t.includes("husband's name") || t.includes('पति का नाम');
 
   const backUniqueMarkers = [
     'electoral registration officer',
@@ -573,19 +573,20 @@ function isVoterFrontDocument(text) {
     'parliamentary constituency',
   ];
   const backScore = backUniqueMarkers.filter(m => t.includes(m)).length;
-  const hasAddress = t.includes('address') || t.includes('पता');
+  const hasAddress = t.includes('address') || t.includes('पता:') || t.includes('पता');
 
-  // If back markers are strong and no front identifiers, reject as front
-  if ((backScore >= 2 || (hasAddress && backScore >= 1)) && !hasFrontKeyword && !hasEpicRegex) {
+  // If back markers/address are present and lacks front demographics (father, gender, dob), reject as front
+  if ((backScore >= 1 || hasAddress) && !hasFather && !hasGender && !hasDobOrAge) {
     return false;
   }
 
-  return Boolean(
-    hasFrontKeyword ||
-    hasEpicRegex ||
-    (t.includes('nirvachan') && (hasGender || hasDobOrAge || t.includes('name'))) ||
-    (t.includes('voter') && (hasEpicRegex || hasGender || hasDobOrAge || t.includes('name')))
-  );
+  // Pure front if it has father's name or gender + dob or front header with demographics
+  if (hasFather) return true;
+  if (hasGender && hasDobOrAge) return true;
+  if (hasFrontKeyword && (hasGender || hasDobOrAge || hasFather)) return true;
+  if (hasFrontKeyword && backScore === 0 && !hasAddress) return true;
+
+  return false;
 }
 
 /**
@@ -594,7 +595,9 @@ function isVoterFrontDocument(text) {
 function isVoterBackDocument(text) {
   if (!text) return false;
   const t = text.toLowerCase();
-  const normalized = t.replace(/\s+/g, ' ');
+  if (t.includes('uidai') || t.includes('aadhaar') || t.includes('aadhar') || t.includes('आधार') || t.includes('pan card') || t.includes('income tax department')) {
+    return false;
+  }
 
   const backMarkers = [
     'electoral registration officer',
@@ -614,43 +617,29 @@ function isVoterBackDocument(text) {
     'parliamentary constituency',
     'संसदीय निर्वाचन क्षेत्र',
     'date of download',
-    'eci.gov.in',
-    '1950',
-    'electoral',
-    'निर्वाचक',
-    'elector',
   ];
 
-  const hasAddress = t.includes('address') || t.includes('पता');
+  const hasAddress = t.includes('address') || t.includes('पता') || t.includes('residential address');
   const backMatches = backMarkers.filter(m => t.includes(m)).length;
 
-  const hasFrontKeyword = normalized.includes('elector photo identity') || t.includes('मतदाता पहचान पत्र');
+  const hasFather = t.includes("father's name") || t.includes('father name') || t.includes('पिता का नाम') || t.includes("husband's name");
   const hasGender = t.includes('male') || t.includes('female') || t.includes('लिंग');
   const hasDobOrAge = t.includes('dob') || t.includes('date of birth') || t.includes('जन्म तिथि');
 
-  // If text is clearly front (has header or gender/dob with NO address and NO back markers)
-  if ((hasFrontKeyword || hasGender || hasDobOrAge) && !hasAddress && backMatches === 0) {
+  // If text is clearly front (has father/gender/dob with NO address and NO back markers), it is NOT back
+  if ((hasFather || hasGender || hasDobOrAge) && !hasAddress && backMatches === 0) {
     return false;
   }
 
-  if (
-    hasAddress &&
-    (backMatches >= 1 ||
-      t.includes('election') ||
-      t.includes('nirvachan') ||
-      t.includes('voter') ||
-      t.includes('commission') ||
-      t.includes('officer') ||
-      t.includes('eci') ||
-      t.includes('1950'))
-  ) {
+  if (hasAddress && (backMatches >= 1 || t.includes('election') || t.includes('nirvachan') || t.includes('voter') || t.includes('commission') || t.includes('officer') || t.includes('eci'))) {
     return true;
   }
 
-  const hasEpicRegex = /\b[a-z]{3}\d{7}\b/i.test(t);
-  const hasEciWebOrHelpline = t.includes('eci.gov.in') || t.includes('1950');
+  if (backMatches >= 1) {
+    return true;
+  }
 
-  return backMatches >= 1 || hasEpicRegex || hasEciWebOrHelpline;
+  return false;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1033,46 +1022,86 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
       throw err;
     }
 
+    // 2. Slot Position Checks
+    const voterBackMarkers = [
+      'electoral registration officer',
+      'निर्वाचक रजिस्ट्रीकरण अधिकारी',
+      'assembly constituency',
+      'विधान सभा',
+      'निर्वाचन क्षेत्र',
+      'polling station',
+      'मतदान केंद्र',
+      'part no',
+      'भाग संख्या',
+      'serial no',
+      'क्रम संख्या',
+      'parliamentary constituency',
+    ];
+    const frontVoterBackMatches = voterBackMarkers.filter((m) => frontText.toLowerCase().includes(m)).length;
+    const backVoterBackMatches = voterBackMarkers.filter((m) => backText.toLowerCase().includes(m)).length;
+
+    const hasVoterFrontDemographics = (t) => {
+      const hasFather = t.includes("father's name") || t.includes('father name') || t.includes('पिता का नाम') || t.includes("husband's name") || t.includes('पति का नाम');
+      const hasGender = t.includes('male') || t.includes('female') || t.includes('लिंग') || t.includes('gender');
+      const hasDob = t.includes('dob') || t.includes('date of birth') || t.includes('जन्म तिथि') || t.includes('age') || t.includes('आयु');
+      const hasHeader = t.includes('elector photo identity') || t.includes('मतदाता पहचान पत्र') || t.includes('elector name') || (t.includes('election') && t.includes('commission'));
+      return hasFather || (hasGender && hasDob) || (hasHeader && (hasGender || hasDob));
+    };
+
+    const frontHasVoterFrontDemographics = hasVoterFrontDemographics(frontText.toLowerCase());
+    const backHasVoterFrontDemographics = hasVoterFrontDemographics(backText.toLowerCase());
+
+    const hasAnyVoterBackMarker =
+      isVoterBackDocument(backText) ||
+      backHasVoter ||
+      backVoterBackMatches >= 1 ||
+      (backText.toLowerCase().includes('address') && (backText.toLowerCase().includes('nirvachan') || backText.toLowerCase().includes('election') || backText.toLowerCase().includes('voter') || backText.toLowerCase().includes('epic') || backText.toLowerCase().includes('officer')));
+
     // Check if Back side was uploaded into Front slot
-    if (frontText && isVoterBackDocument(frontText) && !isVoterFrontDocument(frontText)) {
+    if (frontText && (isVoterBackDocument(frontText) || frontVoterBackMatches >= 1 || (frontText.toLowerCase().includes('address') && !frontHasVoterFrontDemographics))) {
       const err = new Error('Voter ID (Back side) detected in Front side upload. Please upload the Front side of your Voter ID.');
       err.statusCode = 400;
       throw err;
     }
 
-    // Validate Front side Voter ID only if sufficient text was extracted locally
-    if (frontHasExtractableText && !frontHasVoter && !isVoterFrontDocument(frontText)) {
-      const err = new Error('Invalid document detected on Front side. Only Voter ID card is accepted for this verification. No other document is accepted.');
-      err.statusCode = 400;
-      throw err;
-    }
-
     // Check if Front side was uploaded into Back slot
-    if (backText && isVoterFrontDocument(backText) && !isVoterBackDocument(backText)) {
+    if (backText && (backHasVoterFrontDemographics || isVoterFrontDocument(backText)) && backVoterBackMatches === 0 && !isVoterBackDocument(backText)) {
       const err = new Error('Voter ID (Front side) detected in Back side upload. Please upload the Back side of your Voter ID.');
       err.statusCode = 400;
       throw err;
     }
 
-    // Validate Back side Voter ID only if sufficient text was extracted locally
-    const hasAnyVoterBackMarker =
-      isVoterBackDocument(backText) ||
-      backHasVoter ||
-      backText.includes('electoral registration officer') ||
-      backText.includes('निर्वाचक रजिस्ट्रीकरण अधिकारी') ||
-      backText.includes('assembly constituency') ||
-      backText.includes('विधान सभा') ||
-      backText.includes('निर्वाचन क्षेत्र') ||
-      backText.includes('polling station') ||
-      backText.includes('मतदान केंद्र') ||
-      backText.includes('part no') ||
-      backText.includes('भाग संख्या') ||
-      backText.includes('serial no') ||
-      backText.includes('क्रम संख्या') ||
-      (backText.includes('address') && (backText.includes('nirvachan') || backText.includes('election') || backText.includes('voter') || backText.includes('epic') || backText.includes('officer')));
+    // 3. Authentic Voter ID Document Checks
+    const hasFrontVoterDoc = frontHasVoter || isVoterFrontDocument(frontText) || frontHasVoterFrontDemographics;
+    const hasBackVoterDoc = backHasVoter || hasAnyVoterBackMarker;
 
-    if (backHasExtractableText && !hasAnyVoterBackMarker) {
+    if (!hasFrontVoterDoc && !hasBackVoterDoc && (frontText.trim().length >= 10 || backText.trim().length >= 10)) {
+      const err = new Error('Invalid document detected. Only Voter ID card is accepted for this verification. No other document is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    if (frontHasExtractableText && !hasFrontVoterDoc) {
+      const err = new Error('Invalid document detected on Front side. Only Voter ID card is accepted for this verification. No other document is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    if (backHasExtractableText && !hasBackVoterDoc) {
       const err = new Error('Invalid document detected on Back side. Only Voter ID card is accepted for this verification. No other document is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // 4. Final verification checks
+    if (!hasFrontVoterDoc) {
+      const err = new Error('Please upload a valid Voter ID card (Front side). Only Voter ID card is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    if (!hasBackVoterDoc) {
+      const err = new Error('Please upload a valid Voter ID card (Back side). Only Voter ID card is accepted.');
       err.statusCode = 400;
       throw err;
     }

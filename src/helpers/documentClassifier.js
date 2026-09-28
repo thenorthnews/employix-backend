@@ -682,6 +682,9 @@ function isPanDocument(text) {
 function isDlDocument(text) {
   if (!text) return false;
   const t = text.toLowerCase();
+  if (t.includes('uidai') || t.includes('unique identification') || t.includes('aadhaar') || t.includes('aadhar') || t.includes('आधार')) {
+    return false;
+  }
   const normalized = t.replace(/\s+/g, ' ');
 
   const hasDrivingLicence =
@@ -727,6 +730,9 @@ function isDlDocument(text) {
 function isDlFrontDocument(text) {
   if (!text) return false;
   const t = text.toLowerCase();
+  if (t.includes('uidai') || t.includes('unique identification') || t.includes('aadhaar') || t.includes('aadhar') || t.includes('आधार')) {
+    return false;
+  }
   const normalized = t.replace(/\s+/g, ' ');
 
   const hasDlHeader =
@@ -734,21 +740,12 @@ function isDlFrontDocument(text) {
     normalized.includes('driving license') ||
     (t.includes('driving') && (t.includes('licence') || t.includes('license'))) ||
     normalized.includes('union of india') ||
+    normalized.includes('indian union') ||
     (t.includes('union') && t.includes('india')) ||
     normalized.includes('transport department') ||
     (t.includes('transport') && t.includes('department')) ||
-    t.includes('motor vehicles act') ||
-    t.includes('dl no') ||
-    t.includes('licence no') ||
-    t.includes('license no');
-
-  const hasDlNumber =
-    /[a-z]{2}[-\s]?[0-9]{2}[-\s]?[0-9]{4}[-\s]?[0-9]{7}/i.test(t) ||
-    /[a-z]{2}[0-9]{2}[ -]?[0-9]{11}/i.test(t) ||
-    /\b[a-z]{2}[0-9]{2}\s?[0-9]{11}\b/i.test(t) ||
-    t.includes('dl no') ||
-    t.includes('licence no') ||
-    t.includes('license no');
+    t.includes('issued by') ||
+    t.includes('motor vehicles act');
 
   const hasDob =
     t.includes('dob') ||
@@ -764,28 +761,37 @@ function isDlFrontDocument(text) {
     t.includes('s/0') ||
     t.includes('son of') ||
     t.includes('daughter of') ||
-    t.includes('wife of');
+    t.includes('wife of') ||
+    t.includes('father') ||
+    t.includes('husband');
 
-  // Back unique markers on Indian Driving Licenses
-  const backUniqueMarkers = [
+  const hasDlNumber =
+    /[a-z]{2}[-\s]?[0-9]{2}[-\s]?[0-9]{4}[-\s]?[0-9]{7}/i.test(t) ||
+    /[a-z]{2}[0-9]{2}[ -]?[0-9]{11}/i.test(t) ||
+    /\b[a-z]{2}[0-9]{2}\s?[0-9]{11}\b/i.test(t);
+
+  // Purely back-only markers (Vehicle classes table)
+  const backVehicleMarkers = [
     'class of vehicle',
-    'endorsement',
-    'blood group',
-    'blood grp',
-    'organ donor',
-    'badge no',
+    'class of vehicles',
+    'cov',
+    'mcwg',
+    'lmv',
+    'trans',
+    'holder signature',
+    'form 7',
   ];
-  const backCount = backUniqueMarkers.filter(k => t.includes(k)).length;
+  const backMarkerCount = backVehicleMarkers.filter(k => t.includes(k)).length;
 
-  // If back markers are strongly present (>=2) and no front indicators, reject
-  if (backCount >= 2 && !hasDlHeader && !hasParent && !hasDob) {
+  // If text is dominated by back vehicle table and has NO front header or demographics
+  if (backMarkerCount >= 2 && !hasDlHeader && !hasParent && !hasDob) {
     return false;
   }
 
-  // To qualify as front:
+  // Qualifies as front if it has front header, parentage, dob, or DL number with front context
   if (hasDlHeader) return true;
-  if (hasDlNumber) return true;
-  if ((hasParent || hasDob) && (t.includes('licen') || t.includes('transport') || t.includes('valid'))) return true;
+  if (hasParent || hasDob) return true;
+  if (hasDlNumber && backMarkerCount === 0) return true;
 
   return false;
 }
@@ -796,13 +802,17 @@ function isDlFrontDocument(text) {
 function isDlBackDocument(text) {
   if (!text) return false;
   const t = text.toLowerCase();
+  if (t.includes('uidai') || t.includes('unique identification') || t.includes('aadhaar') || t.includes('aadhar') || t.includes('आधार')) {
+    return false;
+  }
   const normalized = t.replace(/\s+/g, ' ');
 
   const hasFrontHeader =
     normalized.includes('union of india') ||
-    (t.includes('union') && t.includes('india')) ||
+    normalized.includes('indian union') ||
     normalized.includes('driving licence') ||
-    normalized.includes('driving license');
+    normalized.includes('driving license') ||
+    t.includes('issued by');
 
   const hasFrontParent =
     t.includes('s/o') ||
@@ -811,7 +821,7 @@ function isDlBackDocument(text) {
     t.includes('son of') ||
     t.includes('daughter of') ||
     t.includes('wife of') ||
-    t.includes('s/0');
+    t.includes('father');
 
   const hasFrontDob =
     t.includes('dob') ||
@@ -819,37 +829,34 @@ function isDlBackDocument(text) {
     t.includes('d.o.b') ||
     t.includes('birth:');
 
-  const backUniqueMarkers = [
-    'class of vehicle',
-    'class of vehicles',
-    'endorsement',
-    'blood group',
-    'blood grp',
-    'organ donor',
-    'badge no',
-    'badge number',
-  ];
-  const backUniqueCount = backUniqueMarkers.filter(m => t.includes(m)).length;
-
-  // If it has front header/parentage/dob and NO back-unique markers, it's definitely front!
-  if ((hasFrontHeader || hasFrontParent || hasFrontDob) && backUniqueCount === 0) {
+  // If text has Front Header or Front Parentage or DOB, it is definitely FRONT side, NOT Back side!
+  if (hasFrontHeader || hasFrontParent || hasFrontDob) {
     return false;
   }
 
-  const hasVehicleClass =
-    t.includes('class of vehicle') ||
-    t.includes('cov') ||
-    t.includes('mcwg') ||
-    t.includes('lmv');
+  // Back side unique markers (Vehicle Class Table, COV, MCWG, LMV, etc.)
+  const backVehicleMarkers = [
+    'class of vehicle',
+    'class of vehicles',
+    'cov',
+    'mcwg',
+    'lmv',
+    'trans',
+    'endorsement',
+    'holder signature',
+    'form 7',
+    'badge no',
+    'authorisation',
+    'authorization',
+  ];
+  const backCount = backVehicleMarkers.filter(m => t.includes(m)).length;
 
-  const hasAddress = t.includes('address') || t.includes('पता');
-
-  if (backUniqueCount >= 1) {
-    if (!hasFrontHeader) return true;
-    if (backUniqueCount >= 2 && !hasFrontParent && !hasFrontDob) return true;
+  if (backCount >= 1) {
+    return true;
   }
 
-  if (hasAddress && hasVehicleClass && !hasFrontHeader && !hasFrontParent && !hasFrontDob) {
+  const hasAddress = t.includes('address') || t.includes('पता');
+  if (hasAddress && (t.includes('licensing authority') || (t.includes('licen') && t.includes('authority')) || t.includes('rto'))) {
     return true;
   }
 
@@ -931,8 +938,8 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
   const frontHasVoter = isVoterDocument(frontText) || Boolean(frontPdfSigs.hasVoter);
   const backHasVoter = isVoterDocument(backText) || isVoterBackDocument(backText) || Boolean(backPdfSigs.hasVoter);
 
-  const frontHasDl = (isDlDocument(frontText) || Boolean(frontPdfSigs.hasDl)) && !frontHasVoter && !frontHasPan;
-  const backHasDl = (isDlDocument(backText) || isDlBackDocument(backText) || Boolean(backPdfSigs.hasDl)) && !backHasVoter && !backHasPan;
+  const frontHasDl = (isDlDocument(frontText) || Boolean(frontPdfSigs.hasDl)) && !frontHasVoter && !frontHasPan && !isAadhaarDocument(frontText);
+  const backHasDl = (isDlDocument(backText) || isDlBackDocument(backText) || Boolean(backPdfSigs.hasDl)) && !backHasVoter && !backHasPan && !isAadhaarDocument(backText) && !isAadhaarBackDocument(backText);
 
   const frontHasAadhaar = (isAadhaarDocument(frontText) || Boolean(frontPdfSigs.hasAadhaar)) && !frontHasVoter && !frontHasPan && !frontHasDl;
   const backHasAadhaar = (isAadhaarDocument(backText) || Boolean(backPdfSigs.hasAadhaar)) && !backHasVoter && !backHasPan && !backHasDl;
@@ -1085,112 +1092,7 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
       throw err;
     }
 
-    // 3. Dimensions and Crop Check (for uploaded images)
-    if (!frontIsPdf && frontBuffer) {
-      const dim = getImageDimensions(frontBuffer);
-      if (dim) {
-        if (dim.width < 320 || dim.height < 180) {
-          const err = new Error(
-            'The uploaded Aadhaar card (Front side) image appears cropped or too small. Please upload a full-size photo showing all 4 corners.'
-          );
-          err.statusCode = 400;
-          throw err;
-        }
-        const aspect = dim.width / dim.height;
-        if (aspect < 0.45 || aspect > 2.8) {
-          const err = new Error(
-            'The uploaded Aadhaar card (Front side) image appears cropped or cut off. Please upload the complete card.'
-          );
-          err.statusCode = 400;
-          throw err;
-        }
-      }
-    }
-
-    if (!backIsPdf && backBuffer) {
-      const dim = getImageDimensions(backBuffer);
-      if (dim) {
-        if (dim.width < 320 || dim.height < 180) {
-          const err = new Error(
-            'The uploaded Aadhaar card (Back side) image appears cropped or too small. Please upload a full-size photo showing all 4 corners.'
-          );
-          err.statusCode = 400;
-          throw err;
-        }
-        const aspect = dim.width / dim.height;
-        if (aspect < 0.45 || aspect > 2.8) {
-          const err = new Error(
-            'The uploaded Aadhaar card (Back side) image appears cropped or cut off. Please upload the complete card.'
-          );
-          err.statusCode = 400;
-          throw err;
-        }
-      }
-    }
-
-    // 4. Blur / Clarity Check (Prioritized BEFORE Invalid Document check)
-    // If image has low confidence or text is unreadable due to blur, flag as blurry immediately
-    if (!frontIsPdf && frontBuffer) {
-      if (frontRes.confidence > 0 && frontRes.confidence < 60) {
-        const err = new Error(
-          'The uploaded Aadhaar card (Front side) image is blurry or unclear. Please upload a clear and sharp photo.'
-        );
-        err.statusCode = 400;
-        throw err;
-      }
-      if (frontText.trim().length < 20) {
-        const err = new Error(
-          'The uploaded Aadhaar card (Front side) image is blurry or unclear. Please upload a clear and sharp photo.'
-        );
-        err.statusCode = 400;
-        throw err;
-      }
-    }
-
-    if (!backIsPdf && backBuffer) {
-      if (backRes.confidence > 0 && backRes.confidence < 60) {
-        const err = new Error(
-          'The uploaded Aadhaar card (Back side) image is blurry or unclear. Please upload a clear and sharp photo.'
-        );
-        err.statusCode = 400;
-        throw err;
-      }
-      if (backText.trim().length < 20) {
-        const err = new Error(
-          'The uploaded Aadhaar card (Back side) image is blurry or unclear. Please upload a clear and sharp photo.'
-        );
-        err.statusCode = 400;
-        throw err;
-      }
-    }
-
-    // Check if Front side has Aadhaar indicators but Aadhaar Number is blurred/missing
-    const hasFront12Digits =
-      /\b\d{4}\s\d{4}\s\d{4}\b/.test(frontText) ||
-      /\b\d{12}\b/.test(frontText) ||
-      /[xX\*\.]{4}\s?[xX\*\.]{4}\s?\d{4}/.test(frontText) ||
-      /\b\d{4}\s\d{4}\s\d{4}\s\d{4}\b/.test(frontText);
-
-    const hasFrontIndicators =
-      frontHasAadhaar ||
-      isAadhaarFrontDocument(frontText) ||
-      frontText.includes('government of india') ||
-      frontText.includes('bharat sarkar') ||
-      frontText.includes('भारत सरकार') ||
-      frontText.includes('mera aadhaar') ||
-      frontText.includes('meri pehchan') ||
-      frontText.includes('dob') ||
-      frontText.includes('जन्म');
-
-    if (!frontIsPdf && hasFrontIndicators && !hasFront12Digits) {
-      const err = new Error(
-        'The uploaded Aadhaar card (Front side) image is blurry or unclear. Please upload a clear and sharp photo.'
-      );
-      err.statusCode = 400;
-      throw err;
-    }
-
-    // 5. Authentic Aadhaar Document Checks (For clear non-Aadhaar documents)
+    // 3. Authentic Aadhaar Document Checks
     const hasFrontAadhaar = frontHasAadhaar || isAadhaarFrontDocument(frontText);
     const hasBackAadhaar = backHasAadhaar || isAadhaarBackDocument(backText);
 
@@ -1215,15 +1117,9 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
       throw err;
     }
 
-    // 6. Final verification checks
+    // 4. Final verification checks
     if (!hasFrontAadhaar) {
-      const err = new Error('The uploaded Aadhaar card (Front side) image is blurry or unclear. Please upload a clear and sharp photo.');
-      err.statusCode = 400;
-      throw err;
-    }
-
-    if (!hasBackAadhaar) {
-      const err = new Error('The uploaded Aadhaar card (Back side) image is blurry or unclear. Please upload a clear and sharp photo.');
+      const err = new Error('Please upload a valid Aadhaar card (Front side). Only Aadhaar card is accepted. No other document is accepted.');
       err.statusCode = 400;
       throw err;
     }
@@ -1237,7 +1133,7 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
 
   // ── 3. DRIVING LICENSE VALIDATION (Images & PDFs) ───────────────────────
   if (expectedType === 'driving_license') {
-    // Cross-document rejection on front and back
+    // 1. Cross-document rejection on front and back
     if (frontHasPan || backHasPan || isPanDocument(frontText) || isPanDocument(backText)) {
       const err = new Error('PAN card detected. Only Driving License is accepted for this verification. No other document is accepted.');
       err.statusCode = 400;
@@ -1259,28 +1155,7 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
       throw err;
     }
 
-    // Check if Back side was uploaded into Front slot (image or PDF)
-    if (frontText && isDlBackDocument(frontText) && !isDlFrontDocument(frontText)) {
-      const err = new Error('Driving License (Back side) detected in Front side upload. Please upload the Front side of your Driving License.');
-      err.statusCode = 400;
-      throw err;
-    }
-
-    // Validate DL Front side only if sufficient text was extracted locally
-    if (frontHasExtractableText && !frontHasDl && !isDlFrontDocument(frontText)) {
-      const err = new Error('Invalid document detected on Front side. Only Driving License is accepted for this verification. No other document is accepted.');
-      err.statusCode = 400;
-      throw err;
-    }
-
-    // Check if Front side was uploaded into Back slot (image or PDF)
-    if (backText && isDlFrontDocument(backText) && !isDlBackDocument(backText)) {
-      const err = new Error('Driving License (Front side) detected in Back side upload. Please upload the Back side of your Driving License.');
-      err.statusCode = 400;
-      throw err;
-    }
-
-    // Validate DL Back side only if sufficient text was extracted locally
+    // 2. Slot Position Checks
     const hasAnyDlBackMarker =
       isDlBackDocument(backText) ||
       backHasDl ||
@@ -1308,8 +1183,54 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
       backText.includes('valid') ||
       (backText.includes('address') && (backText.includes('licens') || backText.includes('licenc') || backText.includes('authority') || backText.includes('holder') || backText.includes('rto')));
 
-    if (backHasExtractableText && !hasAnyDlBackMarker) {
+    // Check if Back side was uploaded into Front slot (image or PDF)
+    if (frontText && isDlBackDocument(frontText) && !isDlFrontDocument(frontText)) {
+      const err = new Error('Driving License (Back side) detected in Front side upload. Please upload the Front side of your Driving License.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // Check if Front side was uploaded into Back slot (image or PDF) - ONLY if backText does not have any back markers
+    if (backText && isDlFrontDocument(backText) && !isDlBackDocument(backText) && !hasAnyDlBackMarker) {
+      const err = new Error('Driving License (Front side) detected in Back side upload. Please upload the Back side of your Driving License.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // 3. Authentic Driving License Document Checks (For clear non-DL documents)
+    const hasFrontDl = frontHasDl || isDlFrontDocument(frontText);
+    const hasBackDl = backHasDl || hasAnyDlBackMarker;
+
+    // If both slots contain clear text but neither matches Driving License
+    if (!hasFrontDl && !hasBackDl && (frontText.trim().length >= 10 || backText.trim().length >= 10)) {
+      const err = new Error('Invalid document detected. Only Driving License is accepted for this verification. No other document is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // Validate DL Front side only if sufficient text was extracted locally
+    if (frontHasExtractableText && !hasFrontDl) {
+      const err = new Error('Invalid document detected on Front side. Only Driving License is accepted for this verification. No other document is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // Validate DL Back side only if sufficient text was extracted locally
+    if (backHasExtractableText && !hasBackDl) {
       const err = new Error('Invalid document detected on Back side. Only Driving License is accepted for this verification. No other document is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // 4. Final verification checks
+    if (!hasFrontDl) {
+      const err = new Error('Please upload a valid Driving License (Front side). Only Driving License is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    if (!hasBackDl) {
+      const err = new Error('Please upload a valid Driving License (Back side). Only Driving License is accepted.');
       err.statusCode = 400;
       throw err;
     }

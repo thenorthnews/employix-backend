@@ -105,9 +105,14 @@ const extractDlOcrData = async ({
       lower.includes('non compliant') ||
       lower.includes('quality standard') ||
       lower.includes('not compliant') ||
-      lower.includes('document_quality')
+      lower.includes('document_quality') ||
+      lower.includes('blur') ||
+      lower.includes('unclear') ||
+      lower.includes('blurry')
     ) {
-      if (lower.includes('front') || lower.includes('documentfront')) {
+      if (lower.includes('blur') || lower.includes('unclear') || lower.includes('blurry')) {
+        friendlyMsg = 'The uploaded Driving License image is blurry or unclear. Please upload a clear and sharp photo.';
+      } else if (lower.includes('front') || lower.includes('documentfront')) {
         friendlyMsg = 'Please upload a valid Driving License (Front side). Only Driving License is accepted.';
       } else if (lower.includes('back') || lower.includes('documentback')) {
         friendlyMsg = 'Please upload a valid Driving License (Back side). Only Driving License is accepted.';
@@ -123,7 +128,7 @@ const extractDlOcrData = async ({
 
   const rawDlNumber = String(dlData.licenseNumber || dlData.dlNumber || dlData.number || '').trim();
   if (!rawDlNumber) {
-    const error = new Error('Could not extract valid Driving License details from the image. Please upload a clear photo of your Driving License (Front & Back).');
+    const error = new Error('Driving License scan failed. The document image may be blurry, cropped, or unreadable. Please upload a clear photo of your Driving License.');
     error.statusCode = 400;
     throw error;
   }

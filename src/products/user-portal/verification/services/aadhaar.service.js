@@ -74,7 +74,6 @@ const extractAadhaarOcr = async ({ frontFile, documentFront, backFile, documentB
       maxContentLength: Infinity,
       timeout: 45000,
     });
-    console.log("🚀 ~ extractAadhaarOcr ~ response:", response)
 
     if (response.data?.status === 'failed' || response.data?.error) {
       const setuMsg =
@@ -275,7 +274,6 @@ const processAadhaarVerificationFlow = async ({
   });
 
   const ocrData = gatewayResponse?.data;
-  console.log("🚀 ~ processAadhaarVerificationFlow ~ ocrData:", ocrData)
   if (!ocrData || (!ocrData.aadhaarNumber && !ocrData.documentNumber && !ocrData.name)) {
     const errorMsg =
       ocrData && ocrData.isScanned === false

@@ -53,7 +53,6 @@ const verifyVoterIdRecord = async ({ userId, number, consentPurpose, correlation
     });
 
     const responseData = response.data;
-    console.log("🚀 ~ verifyVoterIdRecord ~ responseData:", responseData)
 
     if (!responseData?.data || responseData?.message === 'Voter ID number not found') {
       const dynamicMsg =

@@ -4,7 +4,7 @@ const CONSENT = require('../../config/consent');
 const UserSchema = new mongoose.Schema({
 	name: { type: String, required: true },
 	email: { type: String, required: true, unique: true, lowercase: true },
-	password: { type: String, required: true },
+	password: { type: String, required: true, select: false },
 	 role: {
       type: String,
       enum: ["user", "employer", "admin"],
@@ -43,12 +43,14 @@ const UserSchema = new mongoose.Schema({
   otpExpiry: { type: Date },
   resetPasswordToken: {
   type: String,
-  default: null
+  default: null,
+  select: false,
 },
 
 resetPasswordExpiry: {
   type: Date,
-  default: null
+  default: null,
+  select: false,
 },
  status: {
   type: String,

@@ -9,7 +9,7 @@ const { uploadImage } = require('../uploadImage/uploadMulture');
 const { calculateEmployixScore, calculateEmployeeScore, calculateKycStatus, parseStructuredAddress } = require('../../helpers/documentHelper');
 
 async function getCurrentUserService(userId, req = null) {
-  const user = await User.findById(userId).select('-password -otp -otpExpiry');
+  const user = await User.findById(userId).select('-password -otp -otpExpiry -resetPasswordToken -resetPasswordExpiry');
   if (!user) {
     throw new Error('User not found');
   }

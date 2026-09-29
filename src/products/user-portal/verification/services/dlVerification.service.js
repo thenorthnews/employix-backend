@@ -35,8 +35,6 @@ const extractDlOcrData = async ({
     error.statusCode = 400;
     throw error;
   }
-
-  // Pre-validate that uploaded images match Driving License and not Aadhaar/PAN/Voter/random images
   await validateDocumentConsistency({
     expectedType: 'driving_license',
     frontBuffer: frontFile.buffer,

@@ -264,7 +264,6 @@ const verifyAadhaarDocument = async (req, res) => {
       'Aadhaar document verified successfully'
     );
   } catch (err) {
-    console.log("🚀 ~ verifyAadhaarDocument ~ err:", err)
     const { statusCode, message } = resolveErrorInfo(err, 'Aadhaar verification failed');
 
     // Audit Log: Failure
@@ -546,8 +545,6 @@ const extractPanOcrDocument = async (req, res) => {
 
     return success(res, { ...extractedData, scoreBoost: 20, newScore, maskedPan }, 'PAN details extracted successfully');
   } catch (err) {
-    console.log("🚀 ~ extractPanOcrDocument ~ err:", err)
-    
     const { statusCode, message } = resolveErrorInfo(err, 'Failed to extract PAN details');
 
     // Audit Log: Failure
@@ -596,10 +593,8 @@ const verifyVoterId = async (req, res) => {
     }
 
     const { error, value } = voterIdVerificationSchema.validate(req.body, { abortEarly: false });
-    console.log("🚀 ~ verifyVoterId ~ value:", value)
     if (error) {
       const validationErrors = error.details.map((item) => item.message).join(', ');
-      console.log("🚀 ~ verifyVoterId ~ validationErrors:", validationErrors)
       logger.warn('Validation error in verifyVoterId', {
         correlationId,
         userId,
@@ -668,7 +663,6 @@ const verifyVoterId = async (req, res) => {
 
     return success(res, { ...result, voterStatus: 1, scoreBoost: scoreCfg.voterScore, newScore, kycStatus: newKycStatus }, 'Voter ID and address verified successfully');
   } catch (err) {
-    console.log("🚀 ~ verifyVoterId ~ err:", err)
     const { statusCode, message } = resolveErrorInfo(err, 'Invalid voter id number');
 
     // Audit Log: Failure
@@ -1272,7 +1266,6 @@ const processDlOcr = async (req, res) => {
       'Driving License OCR extracted and verified successfully'
     );
   } catch (err) {
-    console.log("🚀 ~ processDlOcr ~ err:", err)
     const { statusCode, message } = resolveErrorInfo(err, 'Please upload a clear and valid Driving License image');
 
     // Audit Log: Failure
@@ -1511,7 +1504,6 @@ const getKycStatus = async (req, res) => {
       'KYC status fetched successfully'
     );
   } catch (err) {
-    console.log("🚀 ~ getKycStatus ~ err:", err)
     const { statusCode, message } = resolveErrorInfo(err, 'Failed to fetch KYC status');
     logger.error('Failed to get KYC status', { correlationId, userId, statusCode, error: message });
     return serverError(res, message);

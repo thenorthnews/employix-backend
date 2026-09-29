@@ -85,7 +85,10 @@ const fetchEmploymentByUanFlow = async ({ userId, uan, groupId, correlationId = 
         },
         timeout: 45000,
       }
+
     );
+     console.log("🚀 ~ fetchEmploymentByUanFlow ~ response:", response.data)
+
   } catch (err) {
     const rawMsg =
       err.response?.data?.message ||

@@ -10,7 +10,7 @@ const DEFAULT_SCORE_CONFIG = {
   maxReferencesAllowed: 2,
   totalApplicableScore: 100,
   isActive: true,
-  description: 'Default scoring matrix: Aadhaar 20, Voter 20, Education 20, Employment 30, Reference 5 to 5 (max 10)',
+  description: 'Default scoring matrix: Aadhaar 20, Voter 20, Education 20, Employment 30, Reference 5 to 5 (max 10, 2 references)',
 };
 
 let cachedScoreConfig = { ...DEFAULT_SCORE_CONFIG };
@@ -100,16 +100,22 @@ scoreConfigSchema.statics.getActiveConfig = async function (forceRefresh = false
   }
 
   try {
-    let config = await this.findOne({ isActive: true }).lean();
+    let config = await this.findOne({ isActive: true });
     if (!config) {
       // Auto-seed default configuration in DB table
       const created = await this.create(DEFAULT_SCORE_CONFIG);
       config = created.toObject ? created.toObject() : created;
+    } else if (config.voterScore !== 20 || config.employmentScore !== 30) {
+      // Sync DB config to standard matrix: Voter 20, Employment 30
+      config.voterScore = 20;
+      config.employmentScore = 30;
+      await config.save();
     }
 
+    const configObj = config.toObject ? config.toObject() : config;
     cachedScoreConfig = {
       ...DEFAULT_SCORE_CONFIG,
-      ...config,
+      ...configObj,
     };
     lastCacheTime = now;
     return { ...cachedScoreConfig };

@@ -309,7 +309,7 @@ const computeScoreBreakdown = (
   const maxRefs = Number(scoreConfig.maxReferencesAllowed ?? 2);
   const refMax = refPerItem * maxRefs;
   const applicableTotal = Number(
-    scoreConfig.totalApplicableScore ?? (aadhaarMax + voterMax + eduMax + empMax + refMax)
+    scoreConfig.totalApplicableScore ?? 100
   );
 
   const aadhaarScore = isAadhaar ? aadhaarMax : 0;

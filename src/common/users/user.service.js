@@ -134,7 +134,7 @@ async function getCurrentUserService(userId, req = null) {
   }
 
   // Calculate dynamic 100% Employee Profile Score
-  // Aadhaar (20), Voter (20), Education (20), Employment (30), References (10 max, no penalty for missing 2nd ref)
+  // Aadhaar (20), Voter (20), Education (20), Employment (30), References (5 pts each, max 2 refs = 10 pts)
   const aadhaarDone = user.aadhaarStatus === 1 || Boolean(aadhaarData);
   const voterDone = user.voterStatus === 1 || Boolean(voterData);
   const dlDone = user.dlStatus === 1 || Boolean(dlData);
@@ -267,6 +267,29 @@ async function updateProfileService(userId, values, file, req = null) {
   // Map phone to phoneNumber if provided
   if (updateData.phone && !updateData.phoneNumber) {
     updateData.phoneNumber = updateData.phone;
+  }
+
+  // Handle gender
+  if (updateData.gender) {
+    updateData.gender = String(updateData.gender).trim();
+  }
+
+  // Handle currentAddress and address
+  if (updateData.currentAddress !== undefined || updateData.address !== undefined) {
+    const addrVal = (updateData.currentAddress !== undefined && updateData.currentAddress !== '')
+      ? updateData.currentAddress
+      : updateData.address;
+    const addrStr = typeof addrVal === 'object' ? (addrVal.fullAddress || addrVal.address || '') : String(addrVal || '').trim();
+    updateData.address = addrStr;
+    const structured = typeof addrVal === 'object' && addrVal.fullAddress ? addrVal : parseStructuredAddress(addrStr);
+    updateData.currentAddress = structured;
+    if (structured?.city && !updateData.city) updateData.city = structured.city;
+    if (structured?.state && !updateData.state) updateData.state = structured.state;
+    if (structured?.pincode && !updateData.pincode) updateData.pincode = structured.pincode;
+  }
+
+  if (updateData.gender !== undefined) {
+    updateData.gender = typeof updateData.gender === 'string' ? updateData.gender.trim() : updateData.gender;
   }
 
   const user = await User.findByIdAndUpdate(

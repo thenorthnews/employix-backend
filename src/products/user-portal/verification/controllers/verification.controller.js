@@ -782,7 +782,7 @@ const processVoterOcr = async (req, res) => {
       },
     });
 
-    return success(res, { ...result, voterStatus: 1, scoreBoost: 20, newScore: voterNewScore, kycStatus: voterKycStatus }, 'Voter ID OCR extracted and verified successfully');
+    return success(res, { ...result, voterStatus: 1, scoreBoost: scoreCfg.voterScore, newScore: voterNewScore, kycStatus: voterKycStatus }, 'Voter ID OCR extracted and verified successfully');
   } catch (err) {
     const { statusCode, message } = resolveErrorInfo(err, 'Failed to process Voter ID OCR');
 
@@ -870,7 +870,7 @@ const getEmploymentHistory = async (req, res) => {
       maskedMobile,
     });
 
-    // Mark employment verified in user record & recalculate 7-step score (Employment = 35 pts)
+    // Mark employment verified in user record & recalculate 7-step score (Employment = 30 pts)
     const currentUser = await User.findById(userId);
     const aadhaarDone = currentUser?.aadhaarStatus === 1;
     const voterDone = currentUser?.voterStatus === 1;
@@ -983,7 +983,7 @@ const getEmploymentByUan = async (req, res) => {
       );
     }
 
-    // Mark employment verified & update 7-step score (Employment = 35 pts)
+    // Mark employment verified & update 7-step score (Employment = 30 pts)
     const currentUser = await User.findById(userId);
     const aadhaarDone = currentUser?.aadhaarStatus === 1;
     const voterDone = currentUser?.voterStatus === 1;
@@ -1261,7 +1261,7 @@ const processDlOcr = async (req, res) => {
       {
         ...resObj,
         dlStatus: 1,
-        scoreBoost: 5,
+        scoreBoost: 0,
         newScore,
         kycStatus: dlKycStatus,
       },
@@ -1416,6 +1416,8 @@ const getKycStatus = async (req, res) => {
       kycState,
     });
 
+    const scoreCfg = await ScoreConfig.getActiveConfig();
+
     return success(
       res,
       {
@@ -1432,11 +1434,12 @@ const getKycStatus = async (req, res) => {
         employixScore: currentScore,
         scoreBreakdown: {
           baseScore: 0,
-          aadhaarBoost: aadhaarDone ? 20 : 0,
-          voterBoost: voterDone ? 20 : 0,
-          dlBoost: dlDone ? 5 : 0,
-          employmentBoost: employmentDone ? 35 : 0,
-          educationBoost: eduVerified ? 20 : 0,
+          aadhaarBoost: aadhaarDone ? (scoreCfg?.aadhaarScore ?? 20) : 0,
+          voterBoost: voterDone ? (scoreCfg?.voterScore ?? 20) : 0,
+          dlBoost: 0,
+          employmentBoost: employmentDone ? (scoreCfg?.employmentScore ?? 30) : 0,
+          educationBoost: eduVerified ? (scoreCfg?.educationScore ?? 20) : 0,
+          referenceBoost: Math.min(scoreCfg?.maxReferencesAllowed ?? 2, completedRefCount) * (scoreCfg?.referenceScorePerItem ?? 5),
           currentScore,
           tier: currentScore >= 80 ? 'Platinum Tier' : currentScore >= 60 ? 'Gold Tier' : currentScore >= 20 ? 'Silver Tier' : 'Base Profile',
         },

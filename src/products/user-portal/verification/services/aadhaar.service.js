@@ -12,6 +12,7 @@ const {
   parseDocumentDob,
   standardizeGender,
   generateSafeGroupId,
+  validateAadhaarNameMatch,
 } = require('../../../../helpers/documentHelper');
 const { validateDocumentConsistency } = require('../../../../helpers/documentClassifier');
 const logger = require('../../../../utils/logger');
@@ -284,6 +285,24 @@ const processAadhaarVerificationFlow = async ({
     error.statusCode = 400;
     error.isSetuError = true;
     throw error;
+  }
+
+  // Validate Name Matching against Registered Profile Name
+  const currentUser = await User.findById(userId).select('name email');
+  if (currentUser?.name && ocrData?.name) {
+    const nameCheck = validateAadhaarNameMatch(currentUser.name, ocrData.name);
+    if (!nameCheck.isMatch) {
+      logger.warn('Aadhaar verification rejected due to name mismatch', {
+        userId,
+        registeredName: currentUser.name,
+        aadhaarName: ocrData.name,
+        correlationId,
+      });
+      const error = new Error(nameCheck.reason);
+      error.statusCode = 400;
+      error.isNameMismatch = true;
+      throw error;
+    }
   }
 
   const savedRecord = await saveAadhaarRecord({

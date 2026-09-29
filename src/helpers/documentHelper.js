@@ -248,8 +248,8 @@ const resolveErrorInfo = (err, defaultMessage) => {
       ? rawMessage
       : defaultMessage;
 
-  // For Aadhaar verification, preserve exact Setu error response
-  if (err.isSetuError || String(defaultMessage || '').toLowerCase().includes('aadhaar')) {
+  // For Aadhaar verification or name mismatch errors, preserve exact error response
+  if (err.isNameMismatch || err.isSetuError || String(defaultMessage || '').toLowerCase().includes('aadhaar')) {
     return {
       statusCode,
       message: err.message || message,
@@ -425,6 +425,129 @@ const calculateKycStatus = ({ aadhaarDone, voterDone, dlDone, empDone, eduDone }
 };
 const hashToken = (token) => crypto.createHash('sha256').update(String(token)).digest('hex');
 
+/**
+ * Normalizes a name string:
+ * - Converts to lowercase
+ * - Strips optional leading salutations (Mr, Mrs, Ms, Miss, Dr, Shri, Smt)
+ * - Removes non-alphanumeric punctuation
+ * - Normalizes multiple spaces into a single space
+ * @param {string} str
+ * @returns {string}
+ */
+const normalizeNameString = (str) => {
+  if (!str || typeof str !== 'string') return '';
+  return str
+    .toLowerCase()
+    .replace(/^(mr|mrs|ms|miss|dr|shri|smt)\.?\s+/i, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
+/**
+ * Calculates Levenshtein distance between two strings
+ */
+const getLevenshteinDistance = (a, b) => {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+
+  const matrix = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i++) matrix[i][0] = i;
+  for (let j = 0; j <= b.length; j++) matrix[0][j] = j;
+
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return matrix[a.length][b.length];
+};
+
+/**
+ * Checks if two words match (exact or 1 edit distance for minor typo/OCR noise for words with 4+ chars)
+ */
+const isWordMatching = (w1, w2) => {
+  if (!w1 || !w2) return false;
+  if (w1 === w2) return true;
+  if (w1.length >= 4 && w2.length >= 4) {
+    return getLevenshteinDistance(w1, w2) <= 1;
+  }
+  return false;
+};
+
+/**
+ * Validates if the name on the Aadhaar card matches the registered user's profile name.
+ * Rule specification:
+ * - "Neha Jolly" vs "NEHA JOLLY" -> Match (case-insensitive)
+ * - "NEHA JOLLY" vs "Neha Jolly" -> Match
+ * - "Neha Jolly" vs "Neha  Jolly" -> Match (space-insensitive)
+ * - "Neha Jolly" vs "Neha Jolly Kumar" -> Mismatch (different word count)
+ * - "Neha Jolly" vs "Neha Sharma" -> Mismatch (different last name)
+ * - "Neha Jolly" vs "Rahul Jolly" -> Mismatch (different first name)
+ *
+ * @param {string} registeredName
+ * @param {string} aadhaarName
+ * @returns {{ isMatch: boolean, reason?: string }}
+ */
+const validateDocumentNameMatch = (registeredName, docName, docLabel = 'Aadhaar') => {
+  const normReg = normalizeNameString(registeredName);
+  const normDoc = normalizeNameString(docName);
+
+  if (!normReg || !normDoc) {
+    return { isMatch: true };
+  }
+
+  // Exact match (case & whitespace insensitive)
+  if (normReg === normDoc) {
+    return { isMatch: true };
+  }
+
+  const regTokens = normReg.split(' ').filter(Boolean);
+  const docTokens = normDoc.split(' ').filter(Boolean);
+
+  // If word count is different (e.g. "Neha Jolly" vs "Neha Jolly Kumar") -> Mismatch
+  if (regTokens.length !== docTokens.length) {
+    return {
+      isMatch: false,
+      reason: `${docLabel} name does not match your registered name.`,
+    };
+  }
+
+  // Same word count: check word-by-word in order
+  const inOrderMatch = regTokens.every((token, idx) => isWordMatching(token, docTokens[idx]));
+  if (inOrderMatch) {
+    return { isMatch: true };
+  }
+
+  // Permutation match (same words in different order e.g. "Jolly Neha" vs "Neha Jolly")
+  const sortedReg = [...regTokens].sort();
+  const sortedDoc = [...docTokens].sort();
+  const permMatch = sortedReg.every((token, idx) => isWordMatching(token, sortedDoc[idx]));
+  if (permMatch) {
+    return { isMatch: true };
+  }
+
+  return {
+    isMatch: false,
+    reason: `${docLabel} name does not match your registered name.`,
+  };
+};
+
+const validateAadhaarNameMatch = (registeredName, aadhaarName) =>
+  validateDocumentNameMatch(registeredName, aadhaarName, 'Aadhaar');
+
+const validateDlNameMatch = (registeredName, dlName) =>
+  validateDocumentNameMatch(registeredName, dlName, 'Driving License');
+
+const validateEmploymentNameMatch = (registeredName, epfoName) =>
+  validateDocumentNameMatch(registeredName, epfoName, 'Employment');
+
 module.exports = {
   maskDocumentNumber,
   maskVoterId,
@@ -440,5 +563,9 @@ module.exports = {
   computeScoreBreakdown,
   calculateEmployixScore,
   calculateKycStatus,
-  hashToken
+  hashToken,
+  validateDocumentNameMatch,
+  validateAadhaarNameMatch,
+  validateDlNameMatch,
+  validateEmploymentNameMatch,
 };

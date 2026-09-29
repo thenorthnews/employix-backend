@@ -732,12 +732,18 @@ function isDlFrontDocument(text) {
     normalized.includes('indian union') ||
     (t.includes('union') && t.includes('india')) ||
     normalized.includes('transport department') ||
-    (t.includes('transport') && t.includes('department')) ||
-    t.includes('issued by punjab') ||
+    (t.includes('transport') && (t.includes('department') || t.includes('dept') || t.includes('authority') || t.includes('delhi') || t.includes('punjab') || t.includes('chandigarh') || t.includes('haryana') || t.includes('govt'))) ||
     t.includes('issued by') ||
     t.includes('motor vehicles act');
 
-  // DOB must have explicit DOB/Birth keywords (NOT just any date from vehicle issue table)
+  const hasDlNumber =
+    /[a-z]{2}[-\s]?[0-9]{2}[-\s]?[0-9]{4}[-\s]?[0-9]{7}/i.test(t) ||
+    /[a-z]{2}[0-9]{2}[ -]?[0-9]{11}/i.test(t) ||
+    /\b[a-z]{2}[0-9]{2}\s?[0-9]{11}\b/i.test(t) ||
+    t.includes('dl no') ||
+    t.includes('licence no') ||
+    t.includes('license no');
+
   const hasDob =
     t.includes('dob') ||
     t.includes('date of birth') ||
@@ -762,40 +768,8 @@ function isDlFrontDocument(text) {
     t.includes('name :') ||
     normalized.includes('licensee name');
 
-  // Purely back-only markers (Vehicle classes table & RTO authority signature)
-  const backVehicleMarkers = [
-    'class of vehicle',
-    'class of vehicles',
-    'cov',
-    'mcwg',
-    'mcwog',
-    'lmv',
-    'trans',
-    'emergency contact',
-    'badge number',
-    'badge issued',
-    'invalid carriage',
-    'hazardous validity',
-    'hill validity',
-    'form 7',
-  ];
-  const backMarkerCount = backVehicleMarkers.filter(k => t.includes(k)).length;
-
-  // If text has back-specific vehicle table markers and does NOT have strong front markers, it is NOT front
-  if (backMarkerCount >= 1 && !(hasDlHeader && (hasParent || hasDob || hasName))) {
-    return false;
-  }
-
-  // If text has vehicle table markers and NO front parentage/dob/name, reject as front
-  if (backMarkerCount >= 2 && !hasParent && !hasDob) {
-    return false;
-  }
-
-  // Qualifies as front if it has front header and demographics, or parentage + dob
-  if (hasDlHeader && (hasParent || hasDob || hasName)) return true;
-  if (hasParent && hasDob) return true;
-  if (hasDlHeader && backMarkerCount === 0) return true;
-  if ((hasParent || hasDob || hasName) && backMarkerCount === 0) return true;
+  if (hasDlHeader || hasDlNumber) return true;
+  if (hasParent || hasDob || hasName) return true;
 
   return false;
 }
@@ -817,58 +791,40 @@ function isDlBackDocument(text) {
     normalized.includes('driving licence') ||
     normalized.includes('driving license');
 
-  const hasFrontParent =
-    t.includes('s/o') ||
-    t.includes('d/o') ||
-    t.includes('w/o') ||
-    t.includes('son of') ||
-    t.includes('daughter of') ||
-    t.includes('wife of') ||
-    t.includes('son/daughter/wife') ||
-    t.includes('father');
+  const hasDlNumber =
+    /[a-z]{2}[-\s]?[0-9]{2}[-\s]?[0-9]{4}[-\s]?[0-9]{7}/i.test(t) ||
+    /[a-z]{2}[0-9]{2}[ -]?[0-9]{11}/i.test(t) ||
+    /\b[a-z]{2}[0-9]{2}\s?[0-9]{11}\b/i.test(t);
 
-  const hasFrontDob =
-    t.includes('dob') ||
-    t.includes('date of birth') ||
-    t.includes('d.o.b') ||
-    t.includes('birth:');
+  // If text has Front Header or DL Number, it is FRONT side, NOT back!
+  if (hasFrontHeader || hasDlNumber) {
+    return false;
+  }
 
-  const hasFrontName =
-    t.includes('name:') ||
-    t.includes('name :');
-
-  // Back side unique markers (Vehicle Class Table, COV, MCWG, LMV, etc.)
-  const backVehicleMarkers = [
-    'class of vehicle',
-    'class of vehicles',
-    'cov',
-    'mcwg',
-    'mcwog',
-    'lmv',
-    'trans',
-    'endorsement',
-    'form 7',
+  // True back side unique markers
+  const backUniqueMarkers = [
+    'emergency contact',
     'badge no',
     'badge number',
     'badge issued',
     'invalid carriage',
-    'emergency contact',
     'hazardous validity',
     'hill validity',
+    'form 7',
+    'valid throughout india',
+    'throughout india',
   ];
-  const backCount = backVehicleMarkers.filter(m => t.includes(m)).length;
-
-  // If text has Front Header AND (Parentage or DOB or Name) AND NO back vehicle table markers, it is definitely FRONT side!
-  if ((hasFrontHeader || hasFrontParent || hasFrontDob) && backCount === 0) {
-    return false;
-  }
-
+  const backCount = backUniqueMarkers.filter((m) => t.includes(m)).length;
   if (backCount >= 1) {
     return true;
   }
 
-  const hasAddress = t.includes('address') || t.includes('पता');
-  if (hasAddress && (t.includes('licensing authority') || (t.includes('licen') && t.includes('authority')) || t.includes('rto'))) {
+  const hasAddress =
+    t.includes('residential address') ||
+    t.includes('permanent address') ||
+    (t.includes('address') && (t.includes('pin') || t.includes('house') || t.includes('village')));
+
+  if (hasAddress && (t.includes('licensing authority') || t.includes('authority') || t.includes('rto'))) {
     return true;
   }
 
@@ -1293,14 +1249,7 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
     }
 
     // 2. Slot Position Checks
-    const dlBackTableMarkers = [
-      'class of vehicle',
-      'class of vehicles',
-      'cov',
-      'mcwg',
-      'mcwog',
-      'lmv',
-      'trans',
+    const dlBackUniqueMarkers = [
       'emergency contact',
       'badge number',
       'badge issued',
@@ -1308,20 +1257,34 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
       'hazardous validity',
       'hill validity',
       'form 7',
+      'valid throughout india',
+      'throughout india',
     ];
-    const frontBackTableMatches = dlBackTableMarkers.filter((m) => frontText.toLowerCase().includes(m)).length;
-    const backBackTableMatches = dlBackTableMarkers.filter((m) => backText.toLowerCase().includes(m)).length;
+    const frontBackTableMatches = dlBackUniqueMarkers.filter((m) => frontText.toLowerCase().includes(m)).length;
+    const backBackTableMatches = dlBackUniqueMarkers.filter((m) => backText.toLowerCase().includes(m)).length;
 
-    const hasFrontDemographics = (t) => {
-      const hasParent = t.includes('s/o') || t.includes('d/o') || t.includes('w/o') || t.includes('son of') || t.includes('daughter of') || t.includes('wife of') || t.includes('son/daughter/wife');
+    const hasFrontIndicators = (t) => {
+      const norm = t.toLowerCase().replace(/\s+/g, ' ');
+      const hasHeader =
+        norm.includes('indian union') ||
+        norm.includes('union of india') ||
+        norm.includes('driving licence') ||
+        norm.includes('driving license') ||
+        norm.includes('transport department') ||
+        norm.includes('transport') ||
+        norm.includes('issued by');
+      const hasDlNum =
+        /[a-z]{2}[-\s]?[0-9]{2}[-\s]?[0-9]{4}[-\s]?[0-9]{7}/i.test(t) ||
+        /[a-z]{2}[0-9]{2}[ -]?[0-9]{11}/i.test(t) ||
+        /\b[a-z]{2}[0-9]{2}\s?[0-9]{11}\b/i.test(t);
+      const hasParent = t.includes('s/o') || t.includes('d/o') || t.includes('w/o') || t.includes('son of') || t.includes('daughter of') || t.includes('father');
       const hasDob = t.includes('dob') || t.includes('date of birth') || t.includes('d.o.b') || t.includes('birth:') || t.includes('जन्म तिथि');
-      const hasHeader = t.includes('indian union') || t.includes('union of india') || (t.includes('driving') && (t.includes('licence') || t.includes('license')));
       const hasName = t.includes('name:') || t.includes('name :');
-      return (hasHeader && (hasParent || hasDob || hasName)) || (hasParent && hasDob);
+      return hasHeader || hasDlNum || (hasParent && hasDob) || (hasName && (hasParent || hasDob));
     };
 
-    const frontHasFrontDemographics = hasFrontDemographics(frontText.toLowerCase());
-    const backHasFrontDemographics = hasFrontDemographics(backText.toLowerCase());
+    const frontIsFront = hasFrontIndicators(frontText);
+    const backIsFront = hasFrontIndicators(backText);
 
     const hasAnyDlBackMarker =
       isDlBackDocument(backText) ||
@@ -1329,24 +1292,26 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
       backBackTableMatches >= 1 ||
       backText.includes('endorsement') ||
       backText.includes('form 7') ||
-      (backText.includes('address') && (backText.includes('licens') || backText.includes('authority') || backText.includes('rto')));
+      backText.includes('address') ||
+      backText.includes('पता') ||
+      backText.includes('rto');
 
     // Check if Back side was uploaded into Front slot
-    if (frontText && (isDlBackDocument(frontText) || frontBackTableMatches >= 1) && !frontHasFrontDemographics) {
+    if (frontText && !frontIsFront && (isDlBackDocument(frontText) || frontBackTableMatches >= 1)) {
       const err = new Error('Driving License (Back side) detected in Front side upload. Please upload the Front side of your Driving License.');
       err.statusCode = 400;
       throw err;
     }
 
     // Check if Front side was uploaded into Back slot
-    if (backText && (backHasFrontDemographics || isDlFrontDocument(backText)) && backBackTableMatches === 0 && !isDlBackDocument(backText)) {
+    if (backText && backIsFront && !isDlBackDocument(backText) && backBackTableMatches === 0 && !backText.toLowerCase().includes('address') && !backText.toLowerCase().includes('पता')) {
       const err = new Error('Driving License (Front side) detected in Back side upload. Please upload the Back side of your Driving License.');
       err.statusCode = 400;
       throw err;
     }
 
     // 3. Authentic Driving License Document Checks (For clear non-DL documents)
-    const hasFrontDl = frontHasDl || isDlFrontDocument(frontText) || frontHasFrontDemographics;
+    const hasFrontDl = frontHasDl || isDlFrontDocument(frontText) || frontIsFront;
     const hasBackDl = backHasDl || hasAnyDlBackMarker;
 
     // If both slots contain clear text but neither matches Driving License

@@ -1,6 +1,8 @@
 const axios = require('axios');
 const logger = require('../../../../utils/logger');
 const EmploymentVerification = require('../../models/employmentVerification.model');
+const User = require('../../../../common/users/user.model');
+const { validateEmploymentNameMatch } = require('../../../../helpers/documentHelper');
 const { tagEmploymentRecordsWithCurrent } = require('../helpers/epfoEmploymentHelper');
 
 const SETU_BASE_URL = process.env.SETU_BASE_URL || 'https://dg-sandbox.setu.co';
@@ -30,17 +32,33 @@ const fetchEmploymentHistoryFlow = async ({ userId, mobileNumber, candidateName 
   );
 
   const rawList = response.data?.data || [];
-  const epfoName = (rawList[0]?.name || '').toLowerCase().trim();
-  const userEnteredName = candidateName.toLowerCase().trim();
-  const isNameMatched = Boolean(
-    epfoName && userEnteredName && (epfoName.includes(userEnteredName) || userEnteredName.includes(epfoName))
-  );
-
-  let verificationStatus = 'VERIFIED';
   if (rawList.length === 0) {
-    verificationStatus = 'NOT_FOUND';
-  } else if (!isNameMatched && candidateName) {
-    verificationStatus = 'FLAGGED_MISMATCH';
+    const error = new Error('No EPFO employment records found for this mobile number.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Extract name from EPFO records
+  const epfoName = (rawList.find((r) => r?.name?.trim())?.name || response.data?.name || rawList[0]?.name || '').trim();
+
+  // Validate Name Matching against Registered Profile Name
+  const currentUser = await User.findById(userId).select('name email');
+  const registeredName = currentUser?.name || candidateName;
+
+  if (registeredName && epfoName) {
+    const nameCheck = validateEmploymentNameMatch(registeredName, epfoName);
+    if (!nameCheck.isMatch) {
+      logger.warn('Employment verification rejected due to name mismatch', {
+        userId,
+        registeredName,
+        epfoName,
+        correlationId,
+      });
+      const error = new Error(nameCheck.reason);
+      error.statusCode = 400;
+      error.isNameMismatch = true;
+      throw error;
+    }
   }
 
   const taggedRecords = tagEmploymentRecordsWithCurrent(rawList);
@@ -52,8 +70,8 @@ const fetchEmploymentHistoryFlow = async ({ userId, mobileNumber, candidateName 
     maskedMobileNumber: maskedMobile,
     records: taggedRecords,
     totalRecordsFound: rawList.length,
-    isNameMatched,
-    verificationStatus,
+    isNameMatched: true,
+    verificationStatus: 'VERIFIED',
   });
 
   return savedData;
@@ -85,10 +103,7 @@ const fetchEmploymentByUanFlow = async ({ userId, uan, groupId, correlationId = 
         },
         timeout: 45000,
       }
-
     );
-     console.log("🚀 ~ fetchEmploymentByUanFlow ~ response:", response.data)
-
   } catch (err) {
     const rawMsg =
       err.response?.data?.message ||
@@ -118,17 +133,42 @@ const fetchEmploymentByUanFlow = async ({ userId, uan, groupId, correlationId = 
   }
 
   const rawList = response.data?.data || [];
-  let verificationStatus = rawList.length === 0 ? 'NOT_FOUND' : 'VERIFIED';
+  if (rawList.length === 0) {
+    const error = new Error('No EPFO employment records found for this UAN. Please enter a valid registered UAN or add employment manually.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Extract name from EPFO records
+  const epfoName = (rawList.find((r) => r?.name?.trim())?.name || response.data?.name || rawList[0]?.name || '').trim();
+
+  // Validate Name Matching against Registered Profile Name
+  const currentUser = await User.findById(userId).select('name email');
+  if (currentUser?.name && epfoName) {
+    const nameCheck = validateEmploymentNameMatch(currentUser.name, epfoName);
+    if (!nameCheck.isMatch) {
+      logger.warn('UAN Employment verification rejected due to name mismatch', {
+        userId,
+        registeredName: currentUser.name,
+        epfoName,
+        correlationId,
+      });
+      const error = new Error(nameCheck.reason);
+      error.statusCode = 400;
+      error.isNameMismatch = true;
+      throw error;
+    }
+  }
 
   const savedData = await EmploymentVerification.create({
     userId,
     correlationId,
     setuRequestId: response.data?.id,
-    maskedMobileNumber: maskedUan, // reuse field to store masked UAN
+    maskedMobileNumber: maskedUan,
     records: tagEmploymentRecordsWithCurrent(rawList),
     totalRecordsFound: rawList.length,
     isNameMatched: true,
-    verificationStatus,
+    verificationStatus: 'VERIFIED',
   });
 
   return savedData;

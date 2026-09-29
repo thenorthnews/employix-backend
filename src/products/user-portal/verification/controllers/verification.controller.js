@@ -1040,6 +1040,10 @@ const getEmploymentByUan = async (req, res) => {
     const { statusCode, message } = resolveErrorInfo(err, 'Failed to fetch employment history via UAN');
     logger.error('UAN employment fetch failed', { correlationId, userId, statusCode, error: message, gateway: err.response?.data || null });
 
+    if (err.isNameMismatch) {
+      return badRequest(res, message);
+    }
+
     let friendlyMessage = message;
     const lower = String(message || '').toLowerCase();
     if (

@@ -3,7 +3,7 @@ const FormData = require('form-data');
 const logger = require('../../../../utils/logger');
 const Identification = require('../../models/identification.model');
 const User = require('../../../../common/users/user.model');
-const { parseStructuredAddress } = require('../../../../helpers/documentHelper');
+const { parseStructuredAddress, validateDlNameMatch } = require('../../../../helpers/documentHelper');
 const { validateDocumentConsistency } = require('../../../../helpers/documentClassifier');
 
 const generateSafeGroupId = () => `grp_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
@@ -135,6 +135,24 @@ const extractDlOcrData = async ({
     const error = new Error('Driving License scan failed. The document image may be blurry, cropped, or unreadable. Please upload a clear photo of your Driving License.');
     error.statusCode = 400;
     throw error;
+  }
+
+  // Validate Name Matching against Registered Profile Name
+  const currentUser = await User.findById(userId).select('name email');
+  if (currentUser?.name && dlData?.name) {
+    const nameCheck = validateDlNameMatch(currentUser.name, dlData.name);
+    if (!nameCheck.isMatch) {
+      logger.warn('Driving License verification rejected due to name mismatch', {
+        userId,
+        registeredName: currentUser.name,
+        dlName: dlData.name,
+        correlationId,
+      });
+      const error = new Error(nameCheck.reason);
+      error.statusCode = 400;
+      error.isNameMismatch = true;
+      throw error;
+    }
   }
 
   const maskedDl =

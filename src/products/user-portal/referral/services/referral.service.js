@@ -133,7 +133,7 @@ const getUserReferences = async (referrerId) => {
   const populatedReferences = await Promise.all(
     references.map(async (ref) => {
       let feedback = null;
-      if (ref.isFeedbackSubmitted) {
+      if (ref.isFeedbackSubmitted || ref.status === 'completed' || ref.isPointsAwarded) {
         feedback = await ReferralFeedback.findOne({ referralId: ref._id }).lean();
       }
       const shareableLink = ref.rawToken && !ref.isFeedbackSubmitted

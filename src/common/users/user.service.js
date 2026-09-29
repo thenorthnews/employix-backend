@@ -5,6 +5,7 @@ const EmploymentVerification = require('../../products/user-portal/models/employ
 const Qualification = require('../../products/user-portal/models/qualification.model');
 const Certification = require('../../products/user-portal/models/certification.model');
 const Referral = require('../../products/user-portal/models/referral.model');
+const ReferralFeedback = require('../../products/user-portal/models/referralFeedback.model');
 const { uploadImage } = require('../uploadImage/uploadMulture');
 const { calculateEmployixScore, calculateEmployeeScore, calculateKycStatus, parseStructuredAddress } = require('../../helpers/documentHelper');
 
@@ -123,12 +124,21 @@ async function getCurrentUserService(userId, req = null) {
       (ref) => ref.status === 'completed' || ref.isFeedbackSubmitted || ref.isPointsAwarded
     ).length;
     const clientUrl = process.env.CLIENT_APP_URL || 'http://localhost:5173';
-    userReferences = rawRefs.map((ref) => ({
-      ...ref,
-      shareableLink: ref.rawToken && !ref.isFeedbackSubmitted
-        ? `${clientUrl}/reference-verification?token=${ref.rawToken}`
-        : null,
-    }));
+    userReferences = await Promise.all(
+      rawRefs.map(async (ref) => {
+        let feedback = null;
+        if (ref.status === 'completed' || ref.isFeedbackSubmitted || ref.isPointsAwarded) {
+          feedback = await ReferralFeedback.findOne({ referralId: ref._id }).lean();
+        }
+        return {
+          ...ref,
+          shareableLink: ref.rawToken && !ref.isFeedbackSubmitted
+            ? `${clientUrl}/reference-verification?token=${ref.rawToken}`
+            : null,
+          feedback,
+        };
+      })
+    );
   } catch (refErr) {
     console.error('Error loading references:', refErr);
   }

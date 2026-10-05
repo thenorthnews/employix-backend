@@ -13,8 +13,8 @@ async function requireAuth(req, res, next) {
     const payload = verifyToken(token);
     const user = await User.findById(payload.id);
 
-    if (!user) {
-      return unauthorized(res, 'Invalid token');
+    if (!user || user.isDeleted) {
+      return unauthorized(res, 'User not found or account has been deleted');
     }
     req.user = user;
     next();

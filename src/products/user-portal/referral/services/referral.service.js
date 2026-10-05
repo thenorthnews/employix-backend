@@ -7,6 +7,7 @@ const RewardTransaction = require('../../models/rewardTransaction.model');
 const User = require('../../../../common/users/user.model');
 const { getLatestCandidateCompany } = require('../../verification/helpers/epfoEmploymentHelper');
 const { calculateReferenceScores } = require('../../../../utils/referenceScoreCalculator');
+const { emitToUser } = require('../../../../config/socket');
 
 const CLIENT_APP_URL = process.env.CLIENT_APP_URL || 'http://localhost:5173';
 
@@ -560,6 +561,23 @@ const submitRefereeFeedback = async (
     type: 'credit',
     description: `Professional Reference Verified by ${referral.refereeName} (+5 Points)`,
   });
+
+  // Real-time WebSocket emission to notify candidate screen instantly without refresh
+  try {
+    emitToUser(referral.referrerId._id, 'reference_verified', {
+      referenceId: referral._id,
+      refereeName: referral.refereeName,
+      refereeEmail: referral.refereeEmail,
+      status: 'completed',
+      isFeedbackSubmitted: true,
+      isPointsAwarded: true,
+      points: 5,
+      candidateId: referral.referrerId._id,
+      message: `Professional Reference from ${referral.refereeName} has been verified! (+5 Points)`,
+    });
+  } catch (socketErr) {
+    console.error('Socket emission error in submitRefereeFeedback:', socketErr);
+  }
 
   return {
     completed: true,

@@ -1,15 +1,19 @@
 const express = require('express');
+const http = require('http');
 const morgan = require('morgan');
 const cors = require('cors');
 const path = require('path');
 require('dotenv').config();
 const helmet = require('helmet');
 const { connectDB } = require('./config/database');
+const { initSocket } = require('./config/socket');
 const { globalApiLimiter } = require('./middleware/rateLimiter');
 const routes = require('./routes/index');
 const mongoSanitize = require('express-mongo-sanitize');
 const correlationMiddleware = require('./middleware/correlation');
 const app = express();
+const server = http.createServer(app);
+initSocket(server);
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -62,7 +66,7 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(process.env.PORT, () => {
+server.listen(process.env.PORT, () => {
   console.log(`EMPLOYIX server running on port ${process.env.PORT}`);
 });
 

@@ -6,6 +6,7 @@ const Qualification = require('../../products/user-portal/models/qualification.m
 const Certification = require('../../products/user-portal/models/certification.model');
 const Referral = require('../../products/user-portal/models/referral.model');
 const ReferralFeedback = require('../../products/user-portal/models/referralFeedback.model');
+const RewardTransaction = require('../../products/user-portal/models/rewardTransaction.model');
 const { uploadImage } = require('../uploadImage/uploadMulture');
 const { calculateEmployixScore, calculateEmployeeScore, calculateKycStatus, parseStructuredAddress } = require('../../helpers/documentHelper');
 
@@ -331,9 +332,20 @@ const deleteAccountService = async (userId) => {
     throw new Error("User not found");
   }
 
-  await User.findByIdAndUpdate(userId, {
-    isDeleted: true
-  });
+  // Purge all associated documents across modules
+  await Promise.allSettled([
+    Identification.deleteMany({ userId }),
+    Qualification.deleteMany({ userId }),
+    Certification.deleteMany({ userId }),
+    ManualEmployment.deleteMany({ userId }),
+    EmploymentVerification.deleteMany({ userId }),
+    Referral.deleteMany({ referrerId: userId }),
+    ReferralFeedback.deleteMany({ referrerId: userId }),
+    RewardTransaction.deleteMany({ userId }),
+  ]);
+
+  // Permanently delete user document so email & phone are immediately released for clean re-registration
+  await User.findByIdAndDelete(userId);
 
   return true;
 };

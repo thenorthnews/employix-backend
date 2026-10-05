@@ -21,6 +21,12 @@ async function registerUser({ name, email, phone, profileImage, password = 'Empl
     if (existingPhone) throw new Error('Phone number already registered');
   }
 
+  // Purge any previously deleted account matching this email or phone so re-registration succeeds without E11000 duplicate key error
+  await User.deleteMany({ email: cleanEmail, isDeleted: true });
+  if (phone) {
+    await User.deleteMany({ phoneNumber: phone, isDeleted: true });
+  }
+
   const salt = await bcrypt.genSalt(10);
   const hash = await bcrypt.hash(password, salt);
   const isTargetEmail = cleanEmail === 'nehabharti430@gmail.com' || cleanEmail.includes('nehabharti430');

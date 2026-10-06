@@ -108,6 +108,13 @@ const initializeDigilockerSession = async ({
 
   const headers = getSurepassHeaders(token);
 
+  console.log('\n================== [DIGILOCKER INITIALIZE DEBUG] ==================');
+  console.log('📌 User ID:', userId);
+  console.log('📌 Endpoint:', primaryEndpoint);
+  console.log('📌 Token (masked):', `${token.slice(0, 15)}...${token.slice(-6)}`);
+  console.log('📌 Sanitized Redirect URL:', sanitizedRedirectUrl);
+  console.log('📌 Payload:', JSON.stringify(requestPayload, null, 2));
+
   logger.info('Initializing Surepass DigiLocker session', {
     correlationId,
     userId,
@@ -122,12 +129,21 @@ const initializeDigilockerSession = async ({
       timeout: 30000,
     });
     responseData = response.data;
+    console.log('✅ Surepass Response Status:', response.status);
+    console.log('✅ Surepass Response Data:', JSON.stringify(responseData, null, 2));
+    console.log('===================================================================\n');
   } catch (primaryErr) {
     const primaryStatus = primaryErr.response?.status;
     const errorMsg =
       primaryErr.response?.data?.message ||
       primaryErr.response?.data?.error ||
       primaryErr.message;
+    console.log('❌ Surepass Axios Failed!');
+    console.log('❌ Status:', primaryStatus);
+    console.log('❌ Error Message:', errorMsg);
+    console.log('❌ Response Body:', primaryErr.response?.data);
+    console.log('===================================================================\n');
+
     logger.error('Surepass initialize endpoint failed', {
       correlationId,
       status: primaryStatus,

@@ -33,6 +33,39 @@ const getSurepassBaseUrl = () => {
   return 'https://sandbox.surepass.io';
 };
 
+const sanitizeRedirectUrlForWaf = (urlStr) => {
+  if (!urlStr || typeof urlStr !== 'string') return urlStr;
+  try {
+    const parsed = new URL(urlStr);
+    const hostname = parsed.hostname;
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      parsed.hostname = 'localtest.me';
+      return parsed.toString();
+    }
+    const ipMatch = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (ipMatch) {
+      // Surepass WAF blocks raw IPv4 digits (e.g. 13.232.68.44) in payloads with 403 Forbidden HTML.
+      // nip.io safely resolves hyphenated IPs (13-232-68-44.nip.io) directly to the target server IP in DNS.
+      parsed.hostname = ipMatch.slice(1, 5).join('-') + '.nip.io';
+      return parsed.toString();
+    }
+    return urlStr;
+  } catch {
+    return urlStr
+      .replace(/:\/\/127\.0\.0\.1/g, '://localtest.me')
+      .replace(/:\/\/localhost/g, '://localtest.me')
+      .replace(/:\/\/(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/g, '://$1-$2-$3-$4.nip.io');
+  }
+};
+
+const getSurepassHeaders = (token) => ({
+  Authorization: `Bearer ${token.trim()}`,
+  'Content-Type': 'application/json',
+  Accept: 'application/json',
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+});
+
 /**
  * Step 1: Initialize DigiLocker Session (Create Link API)
  * POST https://sandbox.surepass.io/api/v1/digilocker/initialize
@@ -57,11 +90,7 @@ const initializeDigilockerSession = async ({
       ? `${process.env.CLIENT_APP_URL}/kyc-verification?step=education`
       : `${process.env.FRONTEND_URL || 'http://localhost:5173'}/kyc-verification?step=education`);
 
-  // Surepass WAF blocks requests containing 'localhost' or '127.0.0.1' with 403 Forbidden HTML.
-  // Using 'localtest.me' (which DNS-resolves to 127.0.0.1 locally) bypasses this WAF rule safely.
-  const sanitizedRedirectUrl = rawRedirectUrl
-    .replace('://localhost', '://localtest.me')
-    .replace('://127.0.0.1', '://localtest.me');
+  const sanitizedRedirectUrl = sanitizeRedirectUrlForWaf(rawRedirectUrl);
 
   const primaryEndpoint =
     process.env.SUREPASS_DIGILOCKER_INITIALIZE_URL || `${baseUrl}/api/v1/digilocker/initialize`;
@@ -77,10 +106,7 @@ const initializeDigilockerSession = async ({
     },
   };
 
-  const headers = {
-    Authorization: `Bearer ${token.trim()}`,
-    'Content-Type': 'application/json',
-  };
+  const headers = getSurepassHeaders(token);
 
   logger.info('Initializing Surepass DigiLocker session', {
     correlationId,
@@ -272,9 +298,7 @@ const fetchAndProcessDigilockerDocuments = async ({
   try {
     const statusUrl = `${baseUrl}/api/v1/digilocker/status/${encodeURIComponent(clientId)}`;
     const statusRes = await axios.get(statusUrl, {
-      headers: {
-        Authorization: `Bearer ${token.trim()}`,
-      },
+      headers: getSurepassHeaders(token),
       timeout: 25000,
     });
     statusData = statusRes.data?.data || statusRes.data;
@@ -309,9 +333,7 @@ const fetchAndProcessDigilockerDocuments = async ({
   try {
     const listDocsUrl = `${baseUrl}/api/v1/digilocker/list-documents/${encodeURIComponent(clientId)}`;
     const listRes = await axios.get(listDocsUrl, {
-      headers: {
-        Authorization: `Bearer ${token.trim()}`,
-      },
+      headers: getSurepassHeaders(token),
       timeout: 30000,
     });
     const docs = listRes.data?.data?.documents || listRes.data?.documents || [];
@@ -340,9 +362,7 @@ const fetchAndProcessDigilockerDocuments = async ({
           const dlRes = await axios.get(
             `${baseUrl}/api/v1/digilocker/download-document/${encodeURIComponent(clientId)}/${encodeURIComponent(fileId)}`,
             {
-              headers: {
-                Authorization: `Bearer ${token.trim()}`,
-              },
+              headers: getSurepassHeaders(token),
               timeout: 10000,
             }
           );

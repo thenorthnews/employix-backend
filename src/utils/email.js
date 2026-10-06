@@ -213,7 +213,7 @@ const sendReferenceInvitationEmail = async (refereeEmail, refereeName, candidate
           </a>
         </div>
         <p style="color: #64748b; font-size: 13px; line-height: 1.5; margin-top: 24px;">
-          When you click the link, you will receive a one-time verification code on this email to securely verify your identity before submitting feedback.
+          Click the secure button above to open the reference section directly and submit your confidential feedback.
         </p>
         <p style="color: #94a3b8; font-size: 12px; margin-top: 20px;">
           This link is secure, unique to you, and will expire in <strong>7 days</strong>.

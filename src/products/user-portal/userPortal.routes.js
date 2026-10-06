@@ -36,6 +36,11 @@ const {
   getScoreConfiguration,
   updateScoreConfiguration,
 } = require('./verification/controllers/scoreConfig.controller');
+const {
+  initializeDigilocker,
+  getDigilockerDocuments,
+  getDigilockerSessionStatus,
+} = require('./verification/controllers/digilocker.controller');
 const { requireAuth } = require('../../middleware/auth');
 const { uploadVerificationDocs, uploadDocument } = require('../../common/uploadImage/uploadMulture');
 const { kycLimiter } = require('../../middleware/rateLimiter');
@@ -48,11 +53,33 @@ router.get('/references/verify-token', validateToken);
 router.post('/references/send-otp', sendOtp);
 router.post('/references/verify-otp', verifyOtp);
 router.post('/references/submit-feedback', submitFeedback);
+// --- Public DigiLocker Endpoints (Webhook / Callback - No Auth Required) ---
+router.get('/kyc/digilocker/callback/:clientId?', getDigilockerDocuments);
+router.post('/kyc/digilocker/callback/:clientId?', getDigilockerDocuments);
+router.get('/kyc/digilocker/public-get-documents/:clientId', getDigilockerDocuments);
 
+// ----------------------------------------------------------------------------
+// Authenticated Endpoints (Require Bearer Token)
+// ----------------------------------------------------------------------------
 router.use(requireAuth);
 router.put('/score-config', updateScoreConfiguration);
-// router.use(kycLimiter);
 
+// ============================================================================
+// DigiLocker Candidate Verification Endpoints (Both /digilocker and /kyc/digilocker supported)
+// ============================================================================
+// 1. Initialize DigiLocker Session
+router.post('/digilocker/initialize', initializeDigilocker);
+router.post('/kyc/digilocker/initialize', initializeDigilocker);
+
+// 2. Fetch & Sync Verified Documents
+router.get('/digilocker/get-documents/:clientId', getDigilockerDocuments);
+router.post('/digilocker/get-documents/:clientId', getDigilockerDocuments);
+router.get('/kyc/digilocker/get-documents/:clientId', getDigilockerDocuments);
+router.post('/kyc/digilocker/get-documents/:clientId', getDigilockerDocuments);
+
+// 3. Check Session Status
+router.get('/digilocker/session/:clientId', getDigilockerSessionStatus);
+router.get('/kyc/digilocker/session/:clientId', getDigilockerSessionStatus);
 
 // Aadhaar Flow (OCR Multipart Scan)
 router.post(

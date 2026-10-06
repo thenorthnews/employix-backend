@@ -28,7 +28,7 @@ const rateLimitHandler = (actionType) => (req, res) => {
 
 const globalApiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 1000,
+  max: 10000,
   standardHeaders: true, // `RateLimit-*` headers return karega
   legacyHeaders: false,
   handler: rateLimitHandler('GLOBAL_RATE_LIMIT_EXCEEDED'),

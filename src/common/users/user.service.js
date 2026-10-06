@@ -7,6 +7,7 @@ const Certification = require('../../products/user-portal/models/certification.m
 const Referral = require('../../products/user-portal/models/referral.model');
 const ReferralFeedback = require('../../products/user-portal/models/referralFeedback.model');
 const RewardTransaction = require('../../products/user-portal/models/rewardTransaction.model');
+const DigilockerSession = require('../../products/user-portal/models/digilockerSession.model');
 const { uploadImage } = require('../uploadImage/uploadMulture');
 const { calculateEmployixScore, calculateEmployeeScore, calculateKycStatus, parseStructuredAddress } = require('../../helpers/documentHelper');
 
@@ -116,6 +117,19 @@ async function getCurrentUserService(userId, req = null) {
     console.error('Error loading qualifications/certifications:', err);
   }
 
+  // Load DigiLocker documents from completed sessions
+  let digilockerDocuments = [];
+  try {
+    const latestDlSession = await DigilockerSession.findOne({ userId, status: 'completed' })
+      .sort({ updatedAt: -1 })
+      .lean();
+    if (latestDlSession && Array.isArray(latestDlSession.documents) && latestDlSession.documents.length > 0) {
+      digilockerDocuments = latestDlSession.documents;
+    }
+  } catch (dlErr) {
+    console.error('Error loading DigiLocker documents:', dlErr);
+  }
+
   // Load user references & count verified references (Max 2 allowed)
   let userReferences = [];
   let completedReferencesCount = 0;
@@ -146,12 +160,15 @@ async function getCurrentUserService(userId, req = null) {
 
   // Calculate dynamic 100% Employee Profile Score
   // Aadhaar (20), Voter (20), Education (20), Employment (30), References (5 pts each, max 2 refs = 10 pts)
+  const isDigilockerVerified = digilockerDocuments.length > 0 || user.educationStatus === 1;
   const aadhaarDone = user.aadhaarStatus === 1 || Boolean(aadhaarData);
   const voterDone = user.voterStatus === 1 || Boolean(voterData);
   const dlDone = user.dlStatus === 1 || Boolean(dlData);
-  const empDone = user.employmentStatus === 1 || manualEmployment.length > 0 || epfoEmployment.length > 0;
-  const hasEdu = userQualifications.length > 0 || userCertifications.length > 0;
+  const hasEpfo = epfoEmployment.length > 0 || (Array.isArray(rawEpfoDocs) && rawEpfoDocs.length > 0);
+  const empDone = user.employmentStatus === 1 || hasEpfo;
+  const hasEdu = userQualifications.length > 0 || userCertifications.length > 0 || isDigilockerVerified;
   const eduVerified =
+    isDigilockerVerified ||
     userQualifications.some((q) => q.isVerified === true && q.verificationStatus === 'verified') ||
     userCertifications.some((c) => c.isVerified === true && c.verificationStatus === 'verified');
 
@@ -163,7 +180,8 @@ async function getCurrentUserService(userId, req = null) {
     verifiedReferencesCount: completedReferencesCount,
   });
 
-  const currentScore = scoringData.finalPercentage;
+  // Calculate score from verified items (DigiLocker education awards allocated education score, not 100)
+  const currentScore = user.employixScore >= 100 ? 100 : scoringData.finalPercentage;
 
   const kycState = user.kycStatus === 8 ? 8 : calculateKycStatus({
     aadhaarDone,
@@ -203,6 +221,7 @@ async function getCurrentUserService(userId, req = null) {
       kycStatus: kycState,
       employmentStatus: empDone ? 1 : 0,
       dlStatus: dlDone ? 1 : 0,
+      educationStatus: isDigilockerVerified || eduVerified ? 1 : 0,
     },
   });
 
@@ -225,7 +244,7 @@ async function getCurrentUserService(userId, req = null) {
     kycStatus: kycState,
     employmentStatus: empDone ? 1 : 0,
     dlStatus: dlDone ? 1 : 0,
-    educationStatus: eduVerified ? 1 : 0,
+    educationStatus: isDigilockerVerified || eduVerified ? 1 : 0,
     aadhaarData,
     panData,
     voterData,
@@ -235,6 +254,7 @@ async function getCurrentUserService(userId, req = null) {
     rawEpfoRecords: rawEpfoDocs,
     qualifications: userQualifications,
     certifications: userCertifications,
+    digilockerDocuments,
     references: userReferences,
     verifiedReferencesCount: completedReferencesCount,
     profileScoring: scoringData,

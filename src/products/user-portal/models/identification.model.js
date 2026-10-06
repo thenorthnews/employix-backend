@@ -90,8 +90,16 @@ const identificationSchema = new mongoose.Schema(
     },
     verificationMethod: {
       type: String,
-      enum: ['manual_number', 'ocr_scan'],
+      enum: ['manual_number', 'ocr_scan', 'digilocker'],
       default: 'manual_number',
+    },
+    digilockerClientId: {
+      type: String,
+      default: null,
+    },
+    digilockerDocUrl: {
+      type: String,
+      default: null,
     },
     scoreEarned: {
       type: Number,

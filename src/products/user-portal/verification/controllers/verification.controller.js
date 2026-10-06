@@ -30,6 +30,7 @@ const Qualification = require('../../models/qualification.model');
 const Certification = require('../../models/certification.model');
 const Referral = require('../../models/referral.model');
 const ScoreConfig = require('../../models/scoreConfig.model');
+const DigilockerSession = require('../../models/digilockerSession.model');
 const {
   addQualificationService,
   getQualificationsService,
@@ -42,23 +43,29 @@ const {
 const { resolveErrorInfo, calculateEmployixScore, calculateKycStatus, parseStructuredAddress } = require('../../../../helpers/documentHelper');
 
 const getEducationState = async (userId) => {
-  const qualCount = await Qualification.countDocuments({ userId });
-  const certCount = await Certification.countDocuments({ userId });
-  const hasEdu = qualCount > 0 || certCount > 0;
+  const [qualCount, certCount, verifiedQualCount, verifiedCertCount, dlSession, userDoc] = await Promise.all([
+    Qualification.countDocuments({ userId }),
+    Certification.countDocuments({ userId }),
+    Qualification.countDocuments({
+      userId,
+      isVerified: true,
+      verificationStatus: 'verified',
+    }),
+    Certification.countDocuments({
+      userId,
+      isVerified: true,
+      verificationStatus: 'verified',
+    }),
+    DigilockerSession.findOne({ userId, status: 'completed' }).sort({ updatedAt: -1 }).lean(),
+    User.findById(userId).select('educationStatus').lean(),
+  ]);
 
-  const verifiedQualCount = await Qualification.countDocuments({
-    userId,
-    isVerified: true,
-    verificationStatus: 'verified',
-  });
-  const verifiedCertCount = await Certification.countDocuments({
-    userId,
-    isVerified: true,
-    verificationStatus: 'verified',
-  });
-  const eduVerified = verifiedQualCount > 0 || verifiedCertCount > 0;
+  const hasDigiDocs = Boolean(dlSession && Array.isArray(dlSession.documents) && dlSession.documents.length > 0);
+  const isDigiEdu = hasDigiDocs || userDoc?.educationStatus === 1;
+  const hasEdu = qualCount > 0 || certCount > 0 || isDigiEdu;
+  const eduVerified = verifiedQualCount > 0 || verifiedCertCount > 0 || isDigiEdu;
 
-  return { hasEdu, eduVerified, qualCount, certCount, verifiedQualCount, verifiedCertCount };
+  return { hasEdu, eduVerified, qualCount, certCount, verifiedQualCount, verifiedCertCount, hasDigiDocs };
 };
 
 const getFullUserKycState = async (userId) => {
@@ -625,11 +632,25 @@ const verifyVoterId = async (req, res) => {
       },
     });
 
-    const currentUser = await User.findById(userId);
-    const currentAadhaarStatus = currentUser?.aadhaarStatus || 0;
-    const currentEmpStatus = currentUser?.employmentStatus || 0;
-    const currentDlStatus = currentUser?.dlStatus || 0;
-    const { hasEdu, eduVerified } = await getEducationState(userId);
+    const [currentUser, idRecords, eduState, completedRefCount, scoreCfg] = await Promise.all([
+      User.findById(userId),
+      Identification.find({
+        userId,
+        documentType: { $in: ['aadhaar', 'pan', 'voter_id', 'driving_license'] },
+        verificationStatus: 'verified',
+      }).lean(),
+      getEducationState(userId),
+      Referral.countDocuments({
+        referrerId: userId,
+        $or: [{ isFeedbackSubmitted: true }, { status: 'completed' }, { isPointsAwarded: true }],
+      }),
+      ScoreConfig.getActiveConfig(),
+    ]);
+
+    const currentAadhaarStatus = currentUser?.aadhaarStatus === 1 || idRecords.some((r) => r.documentType === 'aadhaar') ? 1 : 0;
+    const currentEmpStatus = currentUser?.employmentStatus === 1 ? 1 : 0;
+    const currentDlStatus = currentUser?.dlStatus === 1 || idRecords.some((r) => r.documentType === 'driving_license') ? 1 : 0;
+    const { hasEdu, eduVerified } = eduState;
 
     const newKycStatus = calculateKycStatus({
       aadhaarDone: currentAadhaarStatus === 1,
@@ -637,11 +658,6 @@ const verifyVoterId = async (req, res) => {
       dlDone: currentDlStatus === 1,
       empDone: currentEmpStatus === 1,
       eduDone: hasEdu,
-    });
-    const scoreCfg = await ScoreConfig.getActiveConfig();
-    const completedRefCount = await Referral.countDocuments({
-      referrerId: userId,
-      $or: [{ isFeedbackSubmitted: true }, { status: 'completed' }, { isPointsAwarded: true }],
     });
     const newScore = await calculateEmployixScore({
       aadhaarDone: currentAadhaarStatus === 1,
@@ -740,11 +756,25 @@ const processVoterOcr = async (req, res) => {
       },
     });
 
-    const currentVoterUser = await User.findById(userId);
-    const aadhaarState = currentVoterUser?.aadhaarStatus || 0;
-    const empState = currentVoterUser?.employmentStatus || 0;
-    const dlState = currentVoterUser?.dlStatus || 0;
-    const { hasEdu, eduVerified } = await getEducationState(userId);
+    const [currentVoterUser, idRecords, eduState, completedRefCount, scoreCfg] = await Promise.all([
+      User.findById(userId),
+      Identification.find({
+        userId,
+        documentType: { $in: ['aadhaar', 'pan', 'voter_id', 'driving_license'] },
+        verificationStatus: 'verified',
+      }).lean(),
+      getEducationState(userId),
+      Referral.countDocuments({
+        referrerId: userId,
+        $or: [{ isFeedbackSubmitted: true }, { status: 'completed' }, { isPointsAwarded: true }],
+      }),
+      ScoreConfig.getActiveConfig(),
+    ]);
+
+    const aadhaarState = currentVoterUser?.aadhaarStatus === 1 || idRecords.some((r) => r.documentType === 'aadhaar') ? 1 : 0;
+    const empState = currentVoterUser?.employmentStatus === 1 ? 1 : 0;
+    const dlState = currentVoterUser?.dlStatus === 1 || idRecords.some((r) => r.documentType === 'driving_license') ? 1 : 0;
+    const { hasEdu, eduVerified } = eduState;
 
     const voterKycStatus = calculateKycStatus({
       aadhaarDone: aadhaarState === 1,
@@ -752,11 +782,6 @@ const processVoterOcr = async (req, res) => {
       dlDone: dlState === 1,
       empDone: empState === 1,
       eduDone: hasEdu,
-    });
-    const scoreCfg = await ScoreConfig.getActiveConfig();
-    const completedRefCount = await Referral.countDocuments({
-      referrerId: userId,
-      $or: [{ isFeedbackSubmitted: true }, { status: 'completed' }, { isPointsAwarded: true }],
     });
     const voterNewScore = await calculateEmployixScore({
       aadhaarDone: aadhaarState === 1,
@@ -1090,11 +1115,14 @@ const addManualEmployment = async (req, res) => {
     const dlDone = currentUser?.dlStatus === 1;
     const { hasEdu, eduVerified } = await getEducationState(userId);
 
+    const hasEpfo = await EmploymentVerification.exists({ userId });
+    const isEmpDone = Boolean(hasEpfo || (currentUser?.employmentStatus === 1 && currentUser?.epfoData));
+
     const newKycState = calculateKycStatus({
       aadhaarDone,
       voterDone,
       dlDone,
-      empDone: true,
+      empDone: isEmpDone,
       eduDone: hasEdu,
     });
     const scoreCfg = await ScoreConfig.getActiveConfig();
@@ -1106,23 +1134,23 @@ const addManualEmployment = async (req, res) => {
       aadhaarDone,
       voterDone,
       dlDone,
-      empDone: true,
+      empDone: isEmpDone,
       eduDone: eduVerified,
       verifiedReferencesCount: completedRefCount,
     });
 
     await User.findByIdAndUpdate(userId, {
       $set: {
-        employmentStatus: 1,
+        employmentStatus: isEmpDone ? 1 : 0,
         kycStatus: newKycState,
         employixScore: newScore,
       },
     });
-    logger.info('Manual employment record added', { correlationId, userId, companyName });
+    logger.info('Manual employment record added (Self-Reported, Not Verified)', { correlationId, userId, companyName, isEmpDone });
     return success(
       res,
-      { record: newRecord, employmentStatus: 1, kycStatus: newKycState, employixScore: newScore },
-      'Employment record added successfully'
+      { record: newRecord, employmentStatus: isEmpDone ? 1 : 0, kycStatus: newKycState, employixScore: newScore },
+      'Employment record added successfully as Self-Reported'
     );
   } catch (err) {
     logger.error('Failed to add manual employment', { correlationId, userId, error: err.message });
@@ -1157,7 +1185,7 @@ const deleteManualEmployment = async (req, res) => {
     if (!record) return badRequest(res, 'Record not found');
     const remaining = await ManualEmployment.countDocuments({ userId });
     const epfoRemaining = await EmploymentVerification.countDocuments({ userId });
-    const newStatus = remaining > 0 || epfoRemaining > 0 ? 1 : 0;
+    const newStatus = epfoRemaining > 0 ? 1 : 0;
     await User.findByIdAndUpdate(userId, { $set: { employmentStatus: newStatus } });
     return success(res, { employmentStatus: newStatus }, 'Record deleted successfully');
   } catch (err) {

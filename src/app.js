@@ -51,6 +51,8 @@ app.get('/health', (req, res) => {
   });
 });
 app.use('/v1', routes);
+app.use('/api/v1', routes);
+app.use('/api', routes);
 app.use((req, res) => {
   res.status(404).json({
     success: false,

@@ -146,6 +146,19 @@ const uanVerificationSchema = Joi.object({
     .optional(),
 }).unknown(false);
 
+const digilockerInitializeSchema = Joi.object({
+  redirect_url: Joi.string().uri().optional(),
+  redirectUrl: Joi.string().uri().optional(),
+  config: Joi.object().optional(),
+}).unknown(true);
+
+const digilockerGetDocsSchema = Joi.object({
+  clientId: Joi.string().trim().required().messages({
+    'any.required': 'Client ID is required',
+    'string.empty': 'Client ID cannot be empty',
+  }),
+}).unknown(true);
+
 module.exports = {
   aadhaarVerificationSchema,
   panVerificationSchema,
@@ -153,4 +166,6 @@ module.exports = {
   voterIdVerificationSchema,
   employmentHistorySchema,
   uanVerificationSchema,
+  digilockerInitializeSchema,
+  digilockerGetDocsSchema,
 };

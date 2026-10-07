@@ -468,6 +468,83 @@ function isAadhaarBackDocument(text) {
   return Boolean(hasAddress || hasParentCare || hasUidaiHelp);
 }
 
+/**
+ * Extract Aadhaar number candidates from text (both 12-digit and masked last-4 digits)
+ */
+function extractAadhaarNumberCandidates(text) {
+  if (!text) return { fullNumbers: [], last4Digits: [] };
+  const fullNumbers = [];
+  const last4Digits = [];
+
+  // 1. Match 12-digit spaced: "1234 5678 9012"
+  const m12Spaces = text.match(/\b\d{4}[-\s]\d{4}[-\s]\d{4}\b/g) || [];
+  for (const m of m12Spaces) {
+    const clean = m.replace(/[-\s]/g, '');
+    if (!fullNumbers.includes(clean)) fullNumbers.push(clean);
+    const last4 = clean.slice(-4);
+    if (!last4Digits.includes(last4)) last4Digits.push(last4);
+  }
+
+  // 2. Match 12-digit compact
+  const m12Compact = text.match(/\b\d{12}\b/g) || [];
+  for (const m of m12Compact) {
+    if (!fullNumbers.includes(m)) fullNumbers.push(m);
+    const last4 = m.slice(-4);
+    if (!last4Digits.includes(last4)) last4Digits.push(last4);
+  }
+
+  // 3. Match masked: "XXXX XXXX 1234" or "xxxx xxxx 1234" or "**** **** 1234"
+  const mMasked = text.match(/(?:[xX\*\.]{4}[-\s]?){1,2}(\d{4})\b/g) || [];
+  for (const m of mMasked) {
+    const digits = m.match(/\d{4}$/);
+    if (digits && !last4Digits.includes(digits[0])) {
+      last4Digits.push(digits[0]);
+    }
+  }
+
+  return { fullNumbers, last4Digits };
+}
+
+/**
+ * Extract Voter ID EPIC numbers: e.g. "ABC1234567"
+ */
+function extractVoterIdCandidates(text) {
+  if (!text) return [];
+  const matches = text.toUpperCase().match(/\b[A-Z]{3}[0-9]{7}\b/g) || [];
+  return Array.from(new Set(matches));
+}
+
+/**
+ * Extract Driving License numbers: e.g. "DL-1420110012345", "DL14 20110012345", or core 11-digit sequence
+ */
+function extractDlCandidates(text) {
+  if (!text) return [];
+  const clean = text.toUpperCase();
+  const candidates = [];
+
+  // 1. Full standard DL: State Code (2 letters) + RTO Code (2 digits) + Year (4 digits) + 7 digits
+  const fullMatches = clean.match(/\b[A-Z]{2}[-\s/]?[0-9]{2}[-\s/]?[0-9]{4}[-\s/]?[0-9]{7}\b/g) || [];
+  for (const m of fullMatches) {
+    const norm = m.replace(/[-\s/]/g, '');
+    if (!candidates.includes(norm)) candidates.push(norm);
+  }
+
+  // 2. Flexible Indian DL formats
+  const flexMatches = clean.match(/\b[A-Z]{2}[-\s/]?[0-9]{2}[-\s/]?[0-9]{4,11}\b/g) || [];
+  for (const m of flexMatches) {
+    const norm = m.replace(/[-\s/]/g, '');
+    if (!candidates.includes(norm)) candidates.push(norm);
+  }
+
+  // 3. 11-digit core issuance string: YYYY + 7 digits (e.g. 20110012345)
+  const num11Matches = clean.match(/\b(?:19|20)\d{2}[0-9]{7}\b/g) || [];
+  for (const m of num11Matches) {
+    if (!candidates.includes(m)) candidates.push(m);
+  }
+
+  return Array.from(new Set(candidates));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // VOTER ID CARD HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1049,7 +1126,20 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
       throw err;
     }
 
-    // 4. Final verification checks
+    // 4. Cross-Verification: Voter ID EPIC Number Matching between Front and Back
+    const frontEpic = extractVoterIdCandidates(frontText);
+    const backEpic = extractVoterIdCandidates(backText);
+    if (frontEpic.length > 0 && backEpic.length > 0) {
+      const hasMatchingEpic = frontEpic.some((fe) => backEpic.includes(fe));
+      if (!hasMatchingEpic) {
+        logger.warn('Voter ID front and back EPIC mismatch', { frontEpic, backEpic });
+        const err = new Error('Front and Back Voter ID numbers do not match.');
+        err.statusCode = 400;
+        throw err;
+      }
+    }
+
+    // 5. Final verification checks
     if (!hasFrontVoterDoc) {
       const err = new Error('Please upload a valid Voter ID card (Front side). Only Voter ID card is accepted.');
       err.statusCode = 400;
@@ -1177,7 +1267,39 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
       throw err;
     }
 
-    // 4. Final verification checks
+    // 4. Cross-Verification: Number Matching between Front and Back (Must be the exact same person's Aadhaar)
+    const frontAadhaarData = extractAadhaarNumberCandidates(frontText);
+    const backAadhaarData = extractAadhaarNumberCandidates(backText);
+
+    if (frontAadhaarData.fullNumbers.length > 0 && backAadhaarData.fullNumbers.length > 0) {
+      const hasMatching12 = frontAadhaarData.fullNumbers.some((fn) =>
+        backAadhaarData.fullNumbers.includes(fn)
+      );
+      if (!hasMatching12) {
+        logger.warn('Aadhaar front and back number mismatch', {
+          frontNumbers: frontAadhaarData.fullNumbers,
+          backNumbers: backAadhaarData.fullNumbers,
+        });
+        const err = new Error('Front and Back Aadhaar numbers do not match.');
+        err.statusCode = 400;
+        throw err;
+      }
+    } else if (frontAadhaarData.last4Digits.length > 0 && backAadhaarData.last4Digits.length > 0) {
+      const hasMatchingLast4 = frontAadhaarData.last4Digits.some((fl4) =>
+        backAadhaarData.last4Digits.includes(fl4)
+      );
+      if (!hasMatchingLast4) {
+        logger.warn('Aadhaar front and back last 4 digits mismatch', {
+          frontLast4: frontAadhaarData.last4Digits,
+          backLast4: backAadhaarData.last4Digits,
+        });
+        const err = new Error('Front and Back Aadhaar numbers do not match.');
+        err.statusCode = 400;
+        throw err;
+      }
+    }
+
+    // 5. Final verification checks
     if (!hasFrontAadhaar) {
       const err = new Error('Please upload a valid Aadhaar card (Front side). Only Aadhaar card is accepted.');
       err.statusCode = 400;
@@ -1328,7 +1450,22 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
       throw err;
     }
 
-    // 4. Final verification checks
+    // 4. Cross-Verification: Driving License Number Matching between Front and Back
+    const frontDl = extractDlCandidates(frontText);
+    const backDl = extractDlCandidates(backText);
+    if (frontDl.length > 0 && backDl.length > 0) {
+      const hasMatchingDl = frontDl.some((fd) =>
+        backDl.some((bd) => fd === bd || (fd.length >= 8 && bd.length >= 8 && (fd.includes(bd) || bd.includes(fd))))
+      );
+      if (!hasMatchingDl) {
+        logger.warn('Driving License front and back number mismatch', { frontDl, backDl });
+        const err = new Error('Front and Back Driving License numbers do not match.');
+        err.statusCode = 400;
+        throw err;
+      }
+    }
+
+    // 5. Final verification checks
     if (!hasFrontDl) {
       const err = new Error('Please upload a valid Driving License (Front side). Only Driving License is accepted.');
       err.statusCode = 400;

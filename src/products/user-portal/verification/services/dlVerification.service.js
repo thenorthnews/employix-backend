@@ -48,18 +48,46 @@ const extractDlOcrData = async ({
     { groupId: 1 }
   ).lean();
 
+  const { validateDocumentConsistency, isPdfBuffer, extractImagesFromPdfBuffer } = require('../../../../helpers/documentClassifier');
+
   const activeGroupId = groupId || existingRecord?.groupId || generateSafeGroupId();
+
+  let frontBuffer = frontFile.buffer;
+  let frontName = frontFile.originalname || 'dl_front.jpg';
+  let frontMime = frontFile.mimetype || 'image/jpeg';
+
+  if (isPdfBuffer(frontBuffer)) {
+    const imgs = extractImagesFromPdfBuffer(frontBuffer);
+    if (imgs.length > 0) {
+      frontBuffer = imgs[0];
+      frontName = 'dl_front.jpg';
+      frontMime = 'image/jpeg';
+    }
+  }
+
+  let backBuffer = backFile.buffer;
+  let backName = backFile.originalname || 'dl_back.jpg';
+  let backMime = backFile.mimetype || 'image/jpeg';
+
+  if (isPdfBuffer(backBuffer)) {
+    const imgs = extractImagesFromPdfBuffer(backBuffer);
+    if (imgs.length > 0) {
+      backBuffer = imgs[0];
+      backName = 'dl_back.jpg';
+      backMime = 'image/jpeg';
+    }
+  }
 
   const form = new FormData();
   form.append('groupId', String(activeGroupId).trim());
-  form.append('documentFront', frontFile.buffer, {
-    filename: frontFile.originalname || 'dl_front.jpg',
-    contentType: frontFile.mimetype || 'image/jpeg',
+  form.append('documentFront', frontBuffer, {
+    filename: frontName,
+    contentType: frontMime,
   });
 
-  form.append('documentBack', backFile.buffer, {
-    filename: backFile.originalname || 'dl_back.jpg',
-    contentType: backFile.mimetype || 'image/jpeg',
+  form.append('documentBack', backBuffer, {
+    filename: backName,
+    contentType: backMime,
   });
 
   let dlData = {};

@@ -14,8 +14,8 @@ function isPdfBuffer(buffer) {
 }
 
 /**
- * Extract embedded JPEG images from a scanned PDF buffer
- * Accurately parses stream ... endstream PDF blocks and extracts full, untruncated JPEG images
+ * Extract embedded JPEG/PNG images from a scanned PDF buffer
+ * Accurately parses stream ... endstream PDF blocks (including zlib FlateDecode compressed streams)
  */
 function extractImagesFromPdfBuffer(pdfBuffer) {
   if (!pdfBuffer || !Buffer.isBuffer(pdfBuffer)) return [];
@@ -25,15 +25,15 @@ function extractImagesFromPdfBuffer(pdfBuffer) {
   const endStreamMarker = Buffer.from('endstream');
   const jpegHeader = Buffer.from([0xFF, 0xD8, 0xFF]);
   const jpegFooter = Buffer.from([0xFF, 0xD9]);
+  const pngHeader = Buffer.from([0x89, 0x50, 0x4E, 0x47]);
 
-  // Strategy 1: PDF Stream boundary extraction (Most accurate for standard PDF documents)
+  // Strategy 1: PDF Stream boundary extraction (Raw + FlateDecode decompressed)
   let searchIndex = 0;
   while (searchIndex < pdfBuffer.length && images.length < 5) {
     const streamIndex = pdfBuffer.indexOf(streamMarker, searchIndex);
     if (streamIndex === -1) break;
 
     let dataStart = streamIndex + streamMarker.length;
-    // Skip \r, \n, spaces after "stream"
     while (
       dataStart < pdfBuffer.length &&
       (pdfBuffer[dataStart] === 0x0D || pdfBuffer[dataStart] === 0x0A || pdfBuffer[dataStart] === 0x20)
@@ -45,22 +45,42 @@ function extractImagesFromPdfBuffer(pdfBuffer) {
     if (endStreamIndex === -1) break;
 
     const streamChunk = pdfBuffer.slice(dataStart, endStreamIndex);
-    const jpegStart = streamChunk.indexOf(jpegHeader);
-    if (jpegStart !== -1) {
-      const lastJpegEnd = streamChunk.lastIndexOf(jpegFooter);
-      if (lastJpegEnd !== -1 && lastJpegEnd > jpegStart) {
-        const fullImg = streamChunk.slice(jpegStart, lastJpegEnd + 2);
-        // Valid photo inside PDF is at least 3KB
-        if (fullImg.length > 3000) {
-          images.push(fullImg);
+
+    // 1. Direct uncompressed JPEG
+    const jIdx = streamChunk.indexOf(jpegHeader);
+    if (jIdx !== -1) {
+      const jEnd = streamChunk.lastIndexOf(jpegFooter);
+      if (jEnd !== -1 && jEnd > jIdx) {
+        const img = streamChunk.slice(jIdx, jEnd + 2);
+        if (img.length > 3000) images.push(img);
+      }
+    } else if (streamChunk.indexOf(pngHeader) !== -1) {
+      if (streamChunk.length > 3000) images.push(streamChunk);
+    }
+
+    // 2. Decompressed stream JPEG/PNG (FlateDecode)
+    try {
+      const decompressed = zlib.inflateSync(streamChunk);
+      if (decompressed[0] === 0xFF && decompressed[1] === 0xD8 && decompressed[2] === 0xFF) {
+        if (decompressed.length > 3000) images.push(decompressed);
+      } else if (decompressed[0] === 0x89 && decompressed[1] === 0x50 && decompressed[2] === 0x4E) {
+        if (decompressed.length > 3000) images.push(decompressed);
+      } else {
+        const infJIdx = decompressed.indexOf(jpegHeader);
+        if (infJIdx !== -1) {
+          const infJEnd = decompressed.lastIndexOf(jpegFooter);
+          if (infJEnd !== -1 && infJEnd > infJIdx) {
+            const img = decompressed.slice(infJIdx, infJEnd + 2);
+            if (img.length > 3000) images.push(img);
+          }
         }
       }
-    }
+    } catch {}
 
     searchIndex = endStreamIndex + endStreamMarker.length;
   }
 
-  // Strategy 2: Raw byte scanning fallback if stream boundaries were not isolated
+  // Strategy 2: Raw byte scanning fallback
   if (images.length === 0) {
     let rawIndex = 0;
     while (rawIndex < pdfBuffer.length && images.length < 3) {
@@ -123,8 +143,7 @@ function scanPdfBufferForSignatures(buffer) {
 /**
  * Text extraction from PDF:
  * 1. Digital text via pdf-parse
- * 2. Decompressed PDF FlateDecode page streams via zlib (words only)
- * 3. OCR on embedded images (scanned PDFs)
+ * 2. OCR on embedded images (scanned PDFs)
  */
 async function extractTextFromPdf(buffer) {
   let combinedText = '';
@@ -136,53 +155,13 @@ async function extractTextFromPdf(buffer) {
     if (parsedText.length > 0) {
       combinedText += ' ' + parsedText;
     }
-  } catch (pdfErr) {
-    // Ignore invalid stream or damaged structure in scanned PDFs
-  }
+  } catch (pdfErr) {}
 
-  // 2. Extract and decompress FlateDecode streams in PDF (Page content, text objects)
-  try {
-    const streamMarker = Buffer.from('stream');
-    const endStreamMarker = Buffer.from('endstream');
-    let searchIndex = 0;
-
-    while (searchIndex < buffer.length && combinedText.length < 5000) {
-      const sIdx = buffer.indexOf(streamMarker, searchIndex);
-      if (sIdx === -1) break;
-
-      let dStart = sIdx + streamMarker.length;
-      while (
-        dStart < buffer.length &&
-        (buffer[dStart] === 0x0D || buffer[dStart] === 0x0A || buffer[dStart] === 0x20)
-      ) {
-        dStart++;
-      }
-
-      const eIdx = buffer.indexOf(endStreamMarker, dStart);
-      if (eIdx === -1) break;
-
-      const chunk = buffer.slice(dStart, eIdx);
-      try {
-        const decompressed = zlib.inflateSync(chunk);
-        const decStr = decompressed.toString('utf8');
-        // Extract real printable words only (exclude raw binary symbols)
-        const words = decStr.match(/[a-zA-Z\u0900-\u097F]{3,}/g);
-        if (words && words.length > 0) {
-          combinedText += ' ' + words.join(' ').toLowerCase();
-        }
-      } catch {
-        // Not a zlib compressed stream, skip
-      }
-
-      searchIndex = eIdx + endStreamMarker.length;
-    }
-  } catch {}
-
-  // 3. Try OCR on embedded images if present (Scanned PDF)
+  // 2. Try OCR on embedded images if present (Scanned PDF)
   try {
     const embeddedImages = extractImagesFromPdfBuffer(buffer);
-    if (embeddedImages.length > 0) {
-      const { data: { text: ocrText } } = await Tesseract.recognize(embeddedImages[0], 'eng');
+    for (const imgBuf of embeddedImages) {
+      const { data: { text: ocrText } } = await Tesseract.recognize(imgBuf, 'eng');
       if (ocrText) {
         combinedText += ' ' + ocrText.toLowerCase();
       }
@@ -1158,44 +1137,56 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
     const hasFrontAadhaar = frontHasAadhaar || isAadhaarFrontDocument(frontText);
     const hasBackAadhaar = backHasAadhaar || isAadhaarBackDocument(backText);
 
-    // 1. Strict Cross-Document Detection (MUST BE FIRST before blur / clarity or slot checks!)
-    // Voter ID card detection (Front or Back)
-    if (
-      (frontHasVoter ||
-        backHasVoter ||
-        isVoterDocument(frontText) ||
-        isVoterDocument(backText) ||
-        isVoterBackDocument(backText)) &&
-      !hasFrontAadhaar &&
-      !hasBackAadhaar
-    ) {
-      const err = new Error('Voter ID card detected. Only Aadhaar card is accepted for this verification. No other document is accepted.');
+    // 1. Strict Cross-Document Detection (Front and Back slots checked individually for Images & PDFs)
+    // Driving License detection
+    if (frontHasDl || (frontText && isDlDocument(frontText))) {
+      const err = new Error('Driving License detected on Front side. Only Aadhaar card is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (backHasDl || (backText && (isDlDocument(backText) || isDlBackDocument(backText)))) {
+      const err = new Error('Driving License detected on Back side. Only Aadhaar card is accepted.');
       err.statusCode = 400;
       throw err;
     }
 
-    // PAN card detection (Front or Back)
-    if ((frontHasPan || backHasPan || isPanDocument(frontText) || isPanDocument(backText)) && !hasFrontAadhaar && !hasBackAadhaar) {
-      const err = new Error('PAN card detected. Only Aadhaar card is accepted for this verification. No other document is accepted.');
+    // PAN card detection
+    if (frontHasPan || (frontText && isPanDocument(frontText))) {
+      const err = new Error('PAN card detected on Front side. Only Aadhaar card is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (backHasPan || (backText && isPanDocument(backText))) {
+      const err = new Error('PAN card detected on Back side. Only Aadhaar card is accepted.');
       err.statusCode = 400;
       throw err;
     }
 
-    // Driving License detection (Front or Back)
-    if ((frontHasDl || backHasDl) && !hasFrontAadhaar && !hasBackAadhaar) {
-      const err = new Error('Driving License detected. Only Aadhaar card is accepted for this verification. No other document is accepted.');
+    // Voter ID card detection
+    if (frontHasVoter || (frontText && isVoterDocument(frontText))) {
+      const err = new Error('Voter ID detected on Front side. Only Aadhaar card is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (backHasVoter || (backText && (isVoterDocument(backText) || isVoterBackDocument(backText)))) {
+      const err = new Error('Voter ID detected on Back side. Only Aadhaar card is accepted.');
       err.statusCode = 400;
       throw err;
     }
 
-    // Passport detection (Front or Back)
-    if ((isPassportDocument(frontText) || isPassportDocument(backText)) && !hasFrontAadhaar && !hasBackAadhaar) {
-      const err = new Error('Passport detected. Only Aadhaar card is accepted for this verification. No other document is accepted.');
+    // Passport detection
+    if (frontText && isPassportDocument(frontText)) {
+      const err = new Error('Passport detected on Front side. Only Aadhaar card is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (backText && isPassportDocument(backText)) {
+      const err = new Error('Passport detected on Back side. Only Aadhaar card is accepted.');
       err.statusCode = 400;
       throw err;
     }
 
-    // 2. Slot Position Checks
+    // 2. Slot Position Checks (Front must be Front, Back must be Back for Images & PDFs)
     const fNameAadhaar = (frontFilename || '').toLowerCase();
     const bNameAadhaar = (backFilename || '').toLowerCase();
     const isBackFilenameAadhaar = (str) => /(^|[^a-z0-9])(back|piche|rear|bck)($|[^a-z0-9])/i.test(str) || /[-_.]back[-_.]/i.test(str) || /aadhaar[-_\s]*back/i.test(str) || /aadhar[-_\s]*back/i.test(str);
@@ -1522,5 +1513,6 @@ module.exports = {
   isDlDocument,
   isDlFrontDocument,
   isDlBackDocument,
+  extractImagesFromPdfBuffer,
   validateDocumentConsistency,
 };

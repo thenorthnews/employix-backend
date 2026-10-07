@@ -14,7 +14,7 @@ const {
   generateSafeGroupId,
   validateAadhaarNameMatch,
 } = require('../../../../helpers/documentHelper');
-const { validateDocumentConsistency } = require('../../../../helpers/documentClassifier');
+const { validateDocumentConsistency, isPdfBuffer, extractImagesFromPdfBuffer } = require('../../../../helpers/documentClassifier');
 const logger = require('../../../../utils/logger');
 
 const bufferToStream = (buffer) => {
@@ -35,19 +35,45 @@ const extractAadhaarOcr = async ({ frontFile, documentFront, backFile, documentB
     throw new Error('Front document image is required for Aadhaar OCR');
   }
 
+  let frontBuffer = actualFront.buffer;
+  let frontName = actualFront.originalname || 'front.jpg';
+  let frontMime = actualFront.mimetype || 'image/jpeg';
+
+  if (isPdfBuffer(frontBuffer)) {
+    const imgs = extractImagesFromPdfBuffer(frontBuffer);
+    if (imgs.length > 0) {
+      frontBuffer = imgs[0];
+      frontName = 'front.jpg';
+      frontMime = 'image/jpeg';
+    }
+  }
+
+  let backBuffer = actualBack?.buffer;
+  let backName = actualBack?.originalname || 'back.jpg';
+  let backMime = actualBack?.mimetype || 'image/jpeg';
+
+  if (backBuffer && isPdfBuffer(backBuffer)) {
+    const imgs = extractImagesFromPdfBuffer(backBuffer);
+    if (imgs.length > 0) {
+      backBuffer = imgs[0];
+      backName = 'back.jpg';
+      backMime = 'image/jpeg';
+    }
+  }
+
   const formData = new FormData();
 
-  formData.append('documentFront', bufferToStream(actualFront.buffer), {
-    filename: actualFront.originalname || 'front.png',
-    contentType: actualFront.mimetype || 'image/png',
-    knownLength: actualFront.buffer.length,
+  formData.append('documentFront', bufferToStream(frontBuffer), {
+    filename: frontName,
+    contentType: frontMime,
+    knownLength: frontBuffer.length,
   });
 
-  if (actualBack && actualBack.buffer) {
-    formData.append('documentBack', bufferToStream(actualBack.buffer), {
-      filename: actualBack.originalname || 'back.png',
-      contentType: actualBack.mimetype || 'image/png',
-      knownLength: actualBack.buffer.length,
+  if (backBuffer) {
+    formData.append('documentBack', bufferToStream(backBuffer), {
+      filename: backName,
+      contentType: backMime,
+      knownLength: backBuffer.length,
     });
   }
 

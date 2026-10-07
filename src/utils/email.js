@@ -35,10 +35,10 @@ const sendOTPEmail = async (toEmail, name, otpCode) => {
 
   try {
     const info = await transporter.sendMail(mailOptions);
-    console.log(`✅ [EMAIL SENT SUCCESSFULLY] To: ${toEmail} | OTP: ${otpCode} | MsgID: ${info.messageId}`);
+    console.log(`[EMAIL SENT SUCCESSFULLY] To: ${toEmail} | OTP: ${otpCode} | MsgID: ${info.messageId}`);
     return info;
   } catch (err) {
-    console.error(`❌ [EMAIL SENDING FAILED] To: ${toEmail} | Error:`, err.message);
+    console.error(`[EMAIL SENDING FAILED] To: ${toEmail} | Error:`, err.message);
     throw err;
   }
 };
@@ -50,7 +50,7 @@ const sendOTPEmail = async (toEmail, name, otpCode) => {
     subject: 'Welcome to EMPLOYIX!',
     html: `
       <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
-        <h2>Welcome aboard, ${name}! 🎉</h2>
+        <h2>Welcome aboard, ${name}!</h2>
         <p>Your account has been successfully created and verified.</p>
         <p>We are excited to have you with us.</p>
       </div>
@@ -228,10 +228,10 @@ const sendReferenceInvitationEmail = async (refereeEmail, refereeName, candidate
 
   try {
     const info = await transporter.sendMail(mailOptions);
-    console.log(`✅ [REFERENCE INVITATION SENT] To: ${refereeEmail} | Candidate: ${candidateName}`);
+    console.log(`[REFERENCE INVITATION SENT] To: ${refereeEmail} | Candidate: ${candidateName}`);
     return info;
   } catch (err) {
-    console.error(`❌ [REFERENCE INVITATION FAILED] To: ${refereeEmail} | Error:`, err.message);
+    console.error(`[REFERENCE INVITATION FAILED] To: ${refereeEmail} | Error:`, err.message);
     throw err;
   }
 };
@@ -261,10 +261,10 @@ const sendReferenceOtpEmail = async (refereeEmail, refereeName, candidateName, o
 
   try {
     const info = await transporter.sendMail(mailOptions);
-    console.log(`✅ [REFERENCE OTP SENT] To: ${refereeEmail} | OTP: ${otpCode}`);
+    console.log(`[REFERENCE OTP SENT] To: ${refereeEmail} | OTP: ${otpCode}`);
     return info;
   } catch (err) {
-    console.error(`❌ [REFERENCE OTP FAILED] To: ${refereeEmail} | Error:`, err.message);
+    console.error(`[REFERENCE OTP FAILED] To: ${refereeEmail} | Error:`, err.message);
     throw err;
   }
 };

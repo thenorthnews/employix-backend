@@ -11,19 +11,19 @@ const initSocket = (httpServer) => {
   });
 
   io.on('connection', (socket) => {
-    console.log(`🔌 [Socket.io] Client connected: ${socket.id}`);
+    console.log(`[Socket.io] Client connected: ${socket.id}`);
 
     // Join room dedicated to a specific user/candidate
     socket.on('join_user_room', (userId) => {
       if (userId) {
         const room = `user_${userId}`;
         socket.join(room);
-        console.log(`👤 [Socket.io] Socket ${socket.id} joined ${room}`);
+        console.log(`[Socket.io] Socket ${socket.id} joined ${room}`);
       }
     });
 
     socket.on('disconnect', () => {
-      console.log(`🔌 [Socket.io] Client disconnected: ${socket.id}`);
+      console.log(`[Socket.io] Client disconnected: ${socket.id}`);
     });
   });
 
@@ -32,7 +32,7 @@ const initSocket = (httpServer) => {
 
 const getIO = () => {
   if (!io) {
-    console.warn('⚠️ [Socket.io] IO not initialized yet');
+    console.warn('[Socket.io] IO not initialized yet');
   }
   return io;
 };
@@ -45,7 +45,7 @@ const getIO = () => {
  */
 const emitToUser = (userId, eventName, payload = {}) => {
   if (!io) {
-    console.warn('⚠️ [Socket.io] Cannot emit, io is not initialized');
+    console.warn('[Socket.io] Cannot emit, io is not initialized');
     return;
   }
 
@@ -57,7 +57,7 @@ const emitToUser = (userId, eventName, payload = {}) => {
 
   if (userId) {
     io.to(`user_${userId}`).emit(eventName, data);
-    console.log(`📡 [Socket.io] Emitted '${eventName}' to room user_${userId}`);
+    console.log(`[Socket.io] Emitted '${eventName}' to room user_${userId}`);
   }
 
   // Also broadcast so any active tab for this user receives it reliably

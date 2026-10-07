@@ -708,13 +708,31 @@ function isVoterBackDocument(text) {
 function isPanDocument(text) {
   if (!text) return false;
   const t = text.toLowerCase();
+  if (
+    t.includes('election commission') ||
+    t.includes('elector photo identity') ||
+    t.includes('मतदाता पहचान') ||
+    t.includes('nirvachan') ||
+    t.includes('uidai') ||
+    t.includes('unique identification') ||
+    t.includes('aadhaar') ||
+    t.includes('aadhar') ||
+    t.includes('आधार') ||
+    t.includes('driving licence') ||
+    t.includes('driving license') ||
+    t.includes('transport department')
+  ) {
+    return false;
+  }
   const normalized = t.replace(/\s+/g, ' ');
-  return (
+  const hasIncomeTax =
     normalized.includes('income tax department') ||
     (t.includes('income') && t.includes('tax')) ||
     normalized.includes('permanent account number') ||
-    /\b[a-z]{5}\d{4}[a-z]\b/i.test(t)
-  );
+    t.includes('आयकर विभाग');
+  const hasPanNumber = /\b[a-z]{5}\d{4}[a-z]\b/i.test(t);
+
+  return Boolean(hasIncomeTax || (hasPanNumber && (t.includes('father') || t.includes('birth') || t.includes('dob') || t.includes('india'))));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -956,11 +974,11 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
   const frontPdfSigs = frontIsPdf ? scanPdfBufferForSignatures(frontBuffer) : {};
   const backPdfSigs = backIsPdf ? scanPdfBufferForSignatures(backBuffer) : {};
 
-  const frontHasPan = isPanDocument(frontText) || Boolean(frontPdfSigs.hasPan);
-  const backHasPan = isPanDocument(backText) || Boolean(backPdfSigs.hasPan);
-
   const frontHasVoter = isVoterDocument(frontText) || Boolean(frontPdfSigs.hasVoter);
   const backHasVoter = isVoterDocument(backText) || isVoterBackDocument(backText) || Boolean(backPdfSigs.hasVoter);
+
+  const frontHasPan = (isPanDocument(frontText) || Boolean(frontPdfSigs.hasPan)) && !frontHasVoter;
+  const backHasPan = (isPanDocument(backText) || Boolean(backPdfSigs.hasPan)) && !backHasVoter;
 
   const frontHasDl = (isDlDocument(frontText) || Boolean(frontPdfSigs.hasDl)) && !frontHasVoter && !frontHasPan && !isAadhaarDocument(frontText);
   const backHasDl = (isDlDocument(backText) || isDlBackDocument(backText) || Boolean(backPdfSigs.hasDl)) && !backHasVoter && !backHasPan && !isAadhaarDocument(backText) && !isAadhaarBackDocument(backText);
@@ -989,30 +1007,51 @@ async function validateDocumentConsistency({ expectedType, frontBuffer, backBuff
 
   // ── 1. VOTER ID VALIDATION (Images & PDFs) ──────────────────────────────
   if (expectedType === 'voter_id') {
-    // Cross-document rejection: PAN
-    if (frontHasPan || backHasPan || isPanDocument(frontText) || isPanDocument(backText)) {
-      const err = new Error('PAN card detected. Only Voter ID card is accepted for this verification. No other document is accepted.');
+    // 1. Strict Cross-Document Detection (Front and Back slots checked individually for Images & PDFs)
+    // Driving License detection
+    if (frontHasDl || (frontText && isDlDocument(frontText))) {
+      const err = new Error('Driving License detected on Front side. Only Voter ID card is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (backHasDl || (backText && (isDlDocument(backText) || isDlBackDocument(backText)))) {
+      const err = new Error('Driving License detected on Back side. Only Voter ID card is accepted.');
       err.statusCode = 400;
       throw err;
     }
 
-    // Cross-document rejection: Aadhaar
-    if (frontHasAadhaar || backHasAadhaar || isAadhaarDocument(frontText) || isAadhaarDocument(backText)) {
-      const err = new Error('Aadhaar card detected. Only Voter ID card is accepted for this verification. No other document is accepted.');
+    // Aadhaar card detection
+    if (frontHasAadhaar || (frontText && isAadhaarDocument(frontText))) {
+      const err = new Error('Aadhaar card detected on Front side. Only Voter ID card is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (backHasAadhaar || (backText && (isAadhaarDocument(backText) || isAadhaarBackDocument(backText)))) {
+      const err = new Error('Aadhaar card detected on Back side. Only Voter ID card is accepted.');
       err.statusCode = 400;
       throw err;
     }
 
-    // Cross-document rejection: DL
-    if (frontHasDl || backHasDl || isDlDocument(frontText) || isDlDocument(backText) || isDlBackDocument(backText)) {
-      const err = new Error('Driving License detected. Only Voter ID card is accepted for this verification. No other document is accepted.');
+    // PAN card detection
+    if (frontHasPan || (frontText && isPanDocument(frontText))) {
+      const err = new Error('PAN card detected on Front side. Only Voter ID card is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (backHasPan || (backText && isPanDocument(backText))) {
+      const err = new Error('PAN card detected on Back side. Only Voter ID card is accepted.');
       err.statusCode = 400;
       throw err;
     }
 
-    // Cross-document rejection: Passport
-    if (isPassportDocument(frontText) || isPassportDocument(backText)) {
-      const err = new Error('Passport detected. Only Voter ID card is accepted for this verification. No other document is accepted.');
+    // Passport detection
+    if (frontText && isPassportDocument(frontText)) {
+      const err = new Error('Passport detected on Front side. Only Voter ID card is accepted.');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (backText && isPassportDocument(backText)) {
+      const err = new Error('Passport detected on Back side. Only Voter ID card is accepted.');
       err.statusCode = 400;
       throw err;
     }

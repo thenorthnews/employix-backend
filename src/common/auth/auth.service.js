@@ -13,18 +13,39 @@ const saltRounds = 10;
 
 async function registerUser({ name, email, phone, profileImage, password = 'Employix@123', role = 'user' }) {
   const cleanEmail = email ? email.replace(/\s+/g, '').trim().toLowerCase() : '';
-  const existingEmail = await User.findOne({ email: cleanEmail, isDeleted: false });
-  if (existingEmail) throw new Error('Email already registered');
+  const cleanPhone = phone ? String(phone).replace(/\s+/g, '').trim() : '';
 
-  if (phone) {
-    const existingPhone = await User.findOne({ phoneNumber: phone, isDeleted: false });
-    if (existingPhone) throw new Error('Phone number already registered');
+  // 1. Check if email exists in DB
+  const existingEmailUser = await User.findOne({ email: cleanEmail, isDeleted: false });
+  if (existingEmailUser && existingEmailUser.isVerified === true) {
+    throw new Error('Email already registered');
   }
 
-  // Purge any previously deleted account matching this email or phone so re-registration succeeds without E11000 duplicate key error
+  // 2. Check if phone exists in DB for an already verified user
+  if (cleanPhone) {
+    const existingPhoneUser = await User.findOne({ phoneNumber: cleanPhone, isDeleted: false });
+    if (
+      existingPhoneUser &&
+      existingPhoneUser.isVerified === true &&
+      (!existingEmailUser || existingPhoneUser._id.toString() !== existingEmailUser._id.toString())
+    ) {
+      throw new Error('Phone number already registered');
+    }
+
+    // If another unverified temporary user has this phone number, clean it up to prevent duplicate key collision
+    if (
+      existingPhoneUser &&
+      !existingPhoneUser.isVerified &&
+      (!existingEmailUser || existingPhoneUser._id.toString() !== existingEmailUser._id.toString())
+    ) {
+      await User.deleteMany({ _id: existingPhoneUser._id, isVerified: false });
+    }
+  }
+
+  // Purge any soft-deleted account matching this email or phone so re-registration succeeds without duplicate key error
   await User.deleteMany({ email: cleanEmail, isDeleted: true });
-  if (phone) {
-    await User.deleteMany({ phoneNumber: phone, isDeleted: true });
+  if (cleanPhone) {
+    await User.deleteMany({ phoneNumber: cleanPhone, isDeleted: true });
   }
 
   const salt = await bcrypt.genSalt(10);
@@ -33,29 +54,58 @@ async function registerUser({ name, email, phone, profileImage, password = 'Empl
   const otp = isTargetEmail ? '111111' : generateOTP();
   const otpExpiry = getOTPExpiry(isTargetEmail ? 1440 : 10);
 
-  const employixCode = Math.floor(1000 + Math.random() * 9000);
-  const employixId = `#EMP-${employixCode}-IN`;
+  let user;
+  if (existingEmailUser && !existingEmailUser.isVerified) {
+    // User started registration earlier but did not complete OTP verification.
+    // Update existing unverified user record with new details and send fresh OTP.
+    existingEmailUser.name = name || existingEmailUser.name;
+    existingEmailUser.password = hash;
+    if (cleanPhone) {
+      existingEmailUser.phone = cleanPhone;
+      existingEmailUser.phoneNumber = cleanPhone;
+    }
+    if (profileImage) existingEmailUser.profileImage = profileImage;
+    if (role) existingEmailUser.role = role;
+    existingEmailUser.otp = otp;
+    existingEmailUser.otpExpiry = otpExpiry;
+    if (!existingEmailUser.employixId) {
+      const employixCode = Math.floor(1000 + Math.random() * 9000);
+      existingEmailUser.employixId = `#EMP-${employixCode}-IN`;
+    }
+    user = await existingEmailUser.save();
 
-  const user = await User.create({
-    name,
-    email: cleanEmail,
-    phone,
-    phoneNumber: phone,
-    profileImage,
-    password: hash,
-    role,
-    otp,
-    otpExpiry,
-    isVerified: false,
-    employixId,
-  });
+    console.log(`\n======================================================`);
+    console.log(`[UNVERIFIED USER RE-REGISTRATION OTP GENERATED]`);
+    console.log(`   User:   ${user.name} (${user.email})`);
+    console.log(`   OTP:    ${otp}`);
+    console.log(`   Expiry: ${otpExpiry.toLocaleTimeString()}`);
+    console.log(`======================================================\n`);
+  } else {
+    // Brand new user registration
+    const employixCode = Math.floor(1000 + Math.random() * 9000);
+    const employixId = `#EMP-${employixCode}-IN`;
 
-  console.log(`\n======================================================`);
-  console.log(`🔑 [REGISTER OTP GENERATED]`);
-  console.log(`   User:   ${user.name} (${user.email})`);
-  console.log(`   OTP:    ${otp}`);
-  console.log(`   Expiry: ${otpExpiry.toLocaleTimeString()}`);
-  console.log(`======================================================\n`);
+    user = await User.create({
+      name,
+      email: cleanEmail,
+      phone: cleanPhone,
+      phoneNumber: cleanPhone,
+      profileImage,
+      password: hash,
+      role,
+      otp,
+      otpExpiry,
+      isVerified: false,
+      employixId,
+    });
+
+    console.log(`\n======================================================`);
+    console.log(`[REGISTER OTP GENERATED]`);
+    console.log(`   User:   ${user.name} (${user.email})`);
+    console.log(`   OTP:    ${otp}`);
+    console.log(`   Expiry: ${otpExpiry.toLocaleTimeString()}`);
+    console.log(`======================================================\n`);
+  }
 
   const worker = new Worker(path.join(__dirname, '../../workers/emailWorker.js'));
   worker.postMessage({ type: "otp", email: cleanEmail, name, otp });
@@ -86,7 +136,7 @@ async function verifyOTP({ email, otp }) {
   if (!user) throw new Error('User not found with this email');
 
   console.log(`\n======================================================`);
-  console.log(`🔍 [VERIFY OTP ATTEMPT]`);
+  console.log(`[VERIFY OTP ATTEMPT]`);
   console.log(`   Email:       ${cleanEmail}`);
   console.log(`   Entered OTP: '${cleanOtp}'`);
   console.log(`   DB OTP:      '${user.otp}'`);
@@ -163,7 +213,7 @@ async function checkEmailPassword(email) {
   );
 
   console.log(`\n======================================================`);
-  console.log(`🔑 [LOGIN OTP GENERATED & SAVED IN DB]`);
+  console.log(`[LOGIN OTP GENERATED & SAVED IN DB]`);
   console.log(`   User:   ${updatedUser.name} (${updatedUser.email})`);
   console.log(`   OTP:    ${otp}`);
   console.log(`   Expiry: ${otpExpiry.toLocaleTimeString()}`);
@@ -214,7 +264,7 @@ async function resendUserOtp(email) {
   );
 
   console.log(`\n======================================================`);
-  console.log(`🔄 [RESEND OTP UPDATED IN DB]`);
+  console.log(`[RESEND OTP UPDATED IN DB]`);
   console.log(`   User ID: ${user._id}`);
   console.log(`   Email:   ${updatedUser.email}`);
   console.log(`   New OTP: ${newOtp}`);

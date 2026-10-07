@@ -75,9 +75,9 @@ if (process.env.NODE_ENV !== 'production') {
           const corr = correlationId ? ` [${correlationId.slice(0, 8)}]` : '';
           const metaStr = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : '';
           if (stack) {
-            return `\n🚨 [${timestamp}] [${level}]${corr}: ${message}${metaStr}\n${stack}\n`;
+            return `\n[${timestamp}] [${level}]${corr}: ${message}${metaStr}\n${stack}\n`;
           }
-          return `ℹ️ [${timestamp}] [${level}]${corr}: ${message}${metaStr}`;
+          return `[${timestamp}] [${level}]${corr}: ${message}${metaStr}`;
         })
       ),
     })

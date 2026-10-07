@@ -13,7 +13,11 @@ const {
   maskVoterId,
   getGatewayHeaders,
 } = require('../../../../helpers/documentHelper');
-const { validateDocumentConsistency } = require('../../../../helpers/documentClassifier');
+const {
+  validateDocumentConsistency,
+  isPdfBuffer,
+  extractImagesFromPdfBuffer,
+} = require('../../../../helpers/documentClassifier');
 
 const bufferToStream = (buffer) => Readable.from(buffer);
 
@@ -186,18 +190,44 @@ const extractVoterOcrData = async ({ userId, frontFile, backFile, consentPurpose
   const activeGroupId = existingRecord?.groupId || generateSafeGroupId();
   const targetUrl = `${process.env.SETU_BASE_URL || 'https://dg-sandbox.setu.co'}/api/sync/voter-id/ocr`;
 
+  let frontBuffer = actualFront.buffer;
+  let frontName = actualFront.originalname || 'voter_front.jpg';
+  let frontMime = actualFront.mimetype || 'image/jpeg';
+
+  if (isPdfBuffer(frontBuffer)) {
+    const imgs = extractImagesFromPdfBuffer(frontBuffer);
+    if (imgs.length > 0) {
+      frontBuffer = imgs[0];
+      frontName = 'voter_front.jpg';
+      frontMime = 'image/jpeg';
+    }
+  }
+
+  let backBuffer = actualBack?.buffer;
+  let backName = actualBack?.originalname || 'voter_back.jpg';
+  let backMime = actualBack?.mimetype || 'image/jpeg';
+
+  if (backBuffer && isPdfBuffer(backBuffer)) {
+    const imgs = extractImagesFromPdfBuffer(backBuffer);
+    if (imgs.length > 0) {
+      backBuffer = imgs[0];
+      backName = 'voter_back.jpg';
+      backMime = 'image/jpeg';
+    }
+  }
+
   const form = new FormData();
   form.append('groupId', activeGroupId);
 
-  form.append('documentFront', actualFront.buffer, {
-    filename: actualFront.originalname || 'voter_front.png',
-    contentType: actualFront.mimetype || 'image/png',
+  form.append('documentFront', frontBuffer, {
+    filename: frontName,
+    contentType: frontMime,
   });
 
-  if (actualBack && actualBack.buffer) {
-    form.append('documentBack', actualBack.buffer, {
-      filename: actualBack.originalname || 'voter_back.png',
-      contentType: actualBack.mimetype || 'image/png',
+  if (backBuffer) {
+    form.append('documentBack', backBuffer, {
+      filename: backName,
+      contentType: backMime,
     });
   }
 

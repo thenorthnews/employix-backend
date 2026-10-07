@@ -22,10 +22,10 @@ const dispatchEmailWorker = (payload) => {
     const worker = new Worker(workerPath);
     worker.postMessage(payload);
     worker.on('message', (message) => {
-      console.log('✅ [Email Worker Reference]:', message);
+      console.log('[Email Worker Reference]:', message);
     });
     worker.on('error', (error) => {
-      console.error('❌ [Email Worker Reference Error]:', error);
+      console.error('[Email Worker Reference Error]:', error);
     });
     worker.on('exit', (code) => {
       if (code !== 0) {

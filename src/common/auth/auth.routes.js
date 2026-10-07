@@ -11,9 +11,6 @@ router.post("/forgot-password", forgotPassword);
 router.get("/reset-password/:token", showResetPasswordPage);
 router.post("/reset-password", resetPassword);
 
-// router.post('/register', (req, res, next) => {
-//   console.log("🔥🔥🔥 ROUTE HIT HUA, BODY HAI:", req.body);
-//   return register(req, res, next);
-// });
+
 
 module.exports = router;

@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../users/user.model');
@@ -13,99 +14,126 @@ const saltRounds = 10;
 
 async function registerUser({ name, email, phone, profileImage, password = 'Employix@123', role = 'user' }) {
   const cleanEmail = email ? email.replace(/\s+/g, '').trim().toLowerCase() : '';
+  console.log("🚀 ~ registerUser ~ cleanEmail:", cleanEmail)
   const cleanPhone = phone ? String(phone).replace(/\s+/g, '').trim() : '';
 
-  // 1. Check if email exists in DB
-  const existingEmailUser = await User.findOne({ email: cleanEmail, isDeleted: false });
-  if (existingEmailUser && existingEmailUser.isVerified === true) {
+  // 1. Check if an already VERIFIED user exists with this email
+  const verifiedEmailUser = await User.findOne({
+    email: cleanEmail,
+    isVerified: true,
+    isDeleted: false,
+  });
+  if (verifiedEmailUser) {
     throw new Error('Email already registered');
   }
 
-  // 2. Check if phone exists in DB for an already verified user
+    console.log("🚀 ~ registerUser ~ verifiedEmailUser:", verifiedEmailUser)
+
+  // 2. Check if an already VERIFIED user exists with this phone number
   if (cleanPhone) {
-    const existingPhoneUser = await User.findOne({ phoneNumber: cleanPhone, isDeleted: false });
-    if (
-      existingPhoneUser &&
-      existingPhoneUser.isVerified === true &&
-      (!existingEmailUser || existingPhoneUser._id.toString() !== existingEmailUser._id.toString())
-    ) {
+    const verifiedPhoneUser = await User.findOne({
+      $or: [{ phoneNumber: cleanPhone }, { phone: cleanPhone }],
+      isVerified: true,
+      isDeleted: false,
+    });
+    if (verifiedPhoneUser) {
       throw new Error('Phone number already registered');
     }
+  }
 
-    // If another unverified temporary user has this phone number, clean it up to prevent duplicate key collision
-    if (
-      existingPhoneUser &&
-      !existingPhoneUser.isVerified &&
-      (!existingEmailUser || existingPhoneUser._id.toString() !== existingEmailUser._id.toString())
-    ) {
-      await User.deleteMany({ _id: existingPhoneUser._id, isVerified: false });
+  // 3. Purge any unverified or soft-deleted user records matching this email or phone
+  const unverifiedFilter = {
+    $and: [
+      {
+        $or: [
+          { email: cleanEmail },
+          ...(cleanPhone ? [{ phoneNumber: cleanPhone }, { phone: cleanPhone }] : []),
+        ],
+      },
+      {
+        $or: [
+          { isVerified: false },
+          { isVerified: { $exists: false } },
+          { isDeleted: true },
+        ],
+      },
+    ],
+  };
+
+  const oldUnverifiedUsers = await User.find(unverifiedFilter, '_id');
+  const oldUserIds = oldUnverifiedUsers.map((u) => u._id);
+
+  if (oldUserIds.length > 0) {
+    console.log(`[REGISTER] Purging ${oldUserIds.length} unverified/deleted record(s) for email ${cleanEmail} / phone ${cleanPhone}`);
+
+    // Delete unverified user records from User collection
+    await User.deleteMany({ _id: { $in: oldUserIds } });
+
+    // Safely delete associated records from other collections if existing
+    const optionalModels = [
+      'Identification',
+      'Qualification',
+      'Certification',
+      'ManualEmployment',
+      'EmploymentVerification',
+      'DigilockerSession',
+      'Referral',
+      'RewardTransaction',
+    ];
+
+    for (const modelName of optionalModels) {
+      try {
+        if (mongoose.models[modelName]) {
+          await mongoose.models[modelName].deleteMany({ userId: { $in: oldUserIds } });
+        }
+      } catch (err) {
+        console.warn(`[REGISTER CLEANUP] Cleanup warning for ${modelName}:`, err.message);
+      }
     }
   }
 
-  // Purge any soft-deleted account matching this email or phone so re-registration succeeds without duplicate key error
+  // Guarantee no stray unverified/deleted records remain matching email or phone
+  await User.deleteMany({ email: cleanEmail, isVerified: false });
   await User.deleteMany({ email: cleanEmail, isDeleted: true });
   if (cleanPhone) {
+    await User.deleteMany({ phoneNumber: cleanPhone, isVerified: false });
     await User.deleteMany({ phoneNumber: cleanPhone, isDeleted: true });
+    await User.deleteMany({ phone: cleanPhone, isVerified: false });
+    await User.deleteMany({ phone: cleanPhone, isDeleted: true });
   }
 
+  // 4. Generate password hash & fresh OTP
   const salt = await bcrypt.genSalt(10);
   const hash = await bcrypt.hash(password, salt);
   const isTargetEmail = cleanEmail === 'nehabharti430@gmail.com' || cleanEmail.includes('nehabharti430');
   const otp = isTargetEmail ? '111111' : generateOTP();
   const otpExpiry = getOTPExpiry(isTargetEmail ? 1440 : 10);
 
-  let user;
-  if (existingEmailUser && !existingEmailUser.isVerified) {
-    // User started registration earlier but did not complete OTP verification.
-    // Update existing unverified user record with new details and send fresh OTP.
-    existingEmailUser.name = name || existingEmailUser.name;
-    existingEmailUser.password = hash;
-    if (cleanPhone) {
-      existingEmailUser.phone = cleanPhone;
-      existingEmailUser.phoneNumber = cleanPhone;
-    }
-    if (profileImage) existingEmailUser.profileImage = profileImage;
-    if (role) existingEmailUser.role = role;
-    existingEmailUser.otp = otp;
-    existingEmailUser.otpExpiry = otpExpiry;
-    if (!existingEmailUser.employixId) {
-      const employixCode = Math.floor(1000 + Math.random() * 9000);
-      existingEmailUser.employixId = `#EMP-${employixCode}-IN`;
-    }
-    user = await existingEmailUser.save();
+  const employixCode = Math.floor(1000 + Math.random() * 9000);
+  const employixId = `#EMP-${employixCode}-IN`;
 
-    console.log(`\n======================================================`);
-    console.log(`[UNVERIFIED USER RE-REGISTRATION OTP GENERATED]`);
-    console.log(`   User:   ${user.name} (${user.email})`);
-    console.log(`   OTP:    ${otp}`);
-    console.log(`   Expiry: ${otpExpiry.toLocaleTimeString()}`);
-    console.log(`======================================================\n`);
-  } else {
-    // Brand new user registration
-    const employixCode = Math.floor(1000 + Math.random() * 9000);
-    const employixId = `#EMP-${employixCode}-IN`;
+  // 5. Create fresh unverified User record
+  const user = await User.create({
+    name,
+    email: cleanEmail,
+    phone: cleanPhone,
+    phoneNumber: cleanPhone,
+    profileImage,
+    password: hash,
+    role,
+    otp,
+    otpExpiry,
+    isVerified: false,
+    employixId,
+  });
 
-    user = await User.create({
-      name,
-      email: cleanEmail,
-      phone: cleanPhone,
-      phoneNumber: cleanPhone,
-      profileImage,
-      password: hash,
-      role,
-      otp,
-      otpExpiry,
-      isVerified: false,
-      employixId,
-    });
-
-    console.log(`\n======================================================`);
-    console.log(`[REGISTER OTP GENERATED]`);
-    console.log(`   User:   ${user.name} (${user.email})`);
-    console.log(`   OTP:    ${otp}`);
-    console.log(`   Expiry: ${otpExpiry.toLocaleTimeString()}`);
-    console.log(`======================================================\n`);
-  }
+  console.log(`\n======================================================`);
+  console.log(`[REGISTER OTP GENERATED FOR FRESH / RE-REGISTERED USER]`);
+  console.log(`   User:   ${user.name} (${user.email})`);
+  console.log(`   Phone:  ${cleanPhone}`);
+  console.log(`   OTP:    ${otp}`);
+  console.log(`   Expiry: ${otpExpiry.toLocaleTimeString()}`);
+  console.log(`======================================================\n`);
 
   const worker = new Worker(path.join(__dirname, '../../workers/emailWorker.js'));
   worker.postMessage({ type: "otp", email: cleanEmail, name, otp });
@@ -299,7 +327,6 @@ async function logoutService(userId) {
         { 
             $set: { 
                 deviceToken: null,
-                isVerified : false
             } 
         },
         { new: true }

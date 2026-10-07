@@ -88,8 +88,8 @@ const login = async (req, res) => {
 
     const user = await checkEmailPassword(value.email);
     if (!user) {
-      logger.error(`Login failed: Invalid credentials for email -> ${value.email}`);
-      return unauthorized(res, "Invalid credentials");
+      logger.error(`Login failed: User not found with email -> ${value.email}`);
+      return unauthorized(res, "User does not exist");
     }
 
     return success(res, user, "OTP sent successfully");

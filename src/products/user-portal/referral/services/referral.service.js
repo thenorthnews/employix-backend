@@ -516,10 +516,10 @@ const submitRefereeFeedback = async (
   const cleanWorkedTogether = ['Yes', 'No'].includes(workedTogether) ? workedTogether : 'Yes';
   const cleanRecommendation = ['Yes', 'No'].includes(recommendation) ? recommendation : 'Yes';
 
-  // Construct feedback text if not provided
+  // Feedback validation (Mandatory)
   let cleanFeedback = feedback ? String(feedback).trim() : '';
   if (!cleanFeedback) {
-    cleanFeedback = `Verified performance evaluation: Diligence ${numDiligence}/10, Enthusiasm ${numEnthusiasm}/10, Respectfulness ${numRespectfulness}/10. Worked together: ${cleanWorkedTogether}.`;
+    throw new Error('Feedback is required. Please provide your remarks or evaluation.');
   }
 
   // Create feedback record

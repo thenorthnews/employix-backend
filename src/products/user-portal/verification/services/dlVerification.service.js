@@ -4,7 +4,7 @@ const logger = require('../../../../utils/logger');
 const Identification = require('../../models/identification.model');
 const User = require('../../../../common/users/user.model');
 const { parseStructuredAddress, validateDlNameMatch } = require('../../../../helpers/documentHelper');
-const { validateDocumentConsistency } = require('../../../../helpers/documentClassifier');
+const { validateDocumentConsistency, isPdfBuffer, extractImagesFromPdfBuffer } = require('../../../../helpers/documentClassifier');
 
 const generateSafeGroupId = () => `grp_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
@@ -47,8 +47,6 @@ const extractDlOcrData = async ({
     { userId, groupId: { $exists: true, $ne: null } },
     { groupId: 1 }
   ).lean();
-
-  const { validateDocumentConsistency, isPdfBuffer, extractImagesFromPdfBuffer } = require('../../../../helpers/documentClassifier');
 
   const activeGroupId = groupId || existingRecord?.groupId || generateSafeGroupId();
 

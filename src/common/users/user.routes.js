@@ -8,15 +8,19 @@ router.get("/me",requireAuth,getCurrentUser)
 router.put(
   '/updateMe',
   requireAuth,
-  uploadProfileImage.fields([
-    { name: 'profileImage', maxCount: 1 },
-    { name: 'image', maxCount: 1 },
-  ]),
   (req, res, next) => {
-    if (req.files) {
-      req.file = req.files.profileImage?.[0] || req.files.image?.[0] || null;
-    }
-    next();
+    uploadProfileImage.fields([
+      { name: 'profileImage', maxCount: 1 },
+      { name: 'image', maxCount: 1 },
+    ])(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ success: false, message: err.message || 'Image upload failed' });
+      }
+      if (req.files) {
+        req.file = req.files.profileImage?.[0] || req.files.image?.[0] || null;
+      }
+      next();
+    });
   },
   updateProfile
 );

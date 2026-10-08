@@ -5,6 +5,13 @@ const Referral = require('../../models/referral.model');
 const ReferralFeedback = require('../../models/referralFeedback.model');
 const RewardTransaction = require('../../models/rewardTransaction.model');
 const User = require('../../../../common/users/user.model');
+const Identification = require('../../models/identification.model');
+const EmploymentVerification = require('../../models/employmentVerification.model');
+const ManualEmployment = require('../../models/manualEmployment.model');
+const Qualification = require('../../models/qualification.model');
+const Certification = require('../../models/certification.model');
+const DigilockerSession = require('../../models/digilockerSession.model');
+const { calculateEmployixScore, calculateKycStatus } = require('../../../../helpers/documentHelper');
 const { getLatestCandidateCompany } = require('../../verification/helpers/epfoEmploymentHelper');
 const { calculateReferenceScores } = require('../../../../utils/referenceScoreCalculator');
 const { emitToUser } = require('../../../../config/socket');
@@ -547,14 +554,71 @@ const submitRefereeFeedback = async (
   referral.isPointsAwarded = true;
   await referral.save();
 
-  // Atomically award +5 reward points to candidate
-  await User.findByIdAndUpdate(referral.referrerId._id, {
-    $inc: { rewardPoints: 5 },
-  });
+  // Atomically award +5 reward points to candidate & recalculate candidate overall Employix score
+  const candidateId = referral.referrerId._id;
+  let newCandidateScore = 0;
+  let newKycState = 1;
+
+  try {
+    const [candidateUser, records, empRecord, manualEmpRecord, qualCount, certCount, dlSession, completedRefCount] = await Promise.all([
+      User.findById(candidateId),
+      Identification.find({ userId: candidateId, documentType: { $in: ['aadhaar', 'pan', 'voter_id', 'driving_license'] } }).lean(),
+      EmploymentVerification.findOne({ userId: candidateId, verificationStatus: { $in: ['VERIFIED', 'verified'] } }),
+      ManualEmployment.findOne({ userId: candidateId }),
+      Qualification.countDocuments({ userId: candidateId, isVerified: true, verificationStatus: 'verified' }),
+      Certification.countDocuments({ userId: candidateId, isVerified: true, verificationStatus: 'verified' }),
+      DigilockerSession.findOne({ userId: candidateId, status: 'completed' }).sort({ updatedAt: -1 }).lean(),
+      Referral.countDocuments({ referrerId: candidateId, $or: [{ isFeedbackSubmitted: true }, { status: 'completed' }, { isPointsAwarded: true }] }),
+    ]);
+
+    const nonEduTypes = ['aadhaar', 'pan', 'driving_license', 'voter_id'];
+    const eduDigiDocs = (dlSession?.documents || []).filter((d) => {
+      const norm = (d.docType || '').toLowerCase();
+      const name = (d.docName || '').toLowerCase();
+      return !nonEduTypes.includes(norm) && !name.includes('aadhaar') && !name.includes('pan card') && !name.includes('income tax') && !name.includes('voter') && !name.includes('driving license');
+    });
+    const eduVerified = qualCount > 0 || certCount > 0 || eduDigiDocs.length > 0;
+    const aadhaarDone = candidateUser?.aadhaarStatus === 1 || records.some((r) => r.documentType === 'aadhaar' && r.verificationStatus === 'verified');
+    const voterDone = candidateUser?.voterStatus === 1 || records.some((r) => r.documentType === 'voter_id' && r.verificationStatus === 'verified');
+    const dlDone = candidateUser?.dlStatus === 1 || records.some((r) => r.documentType === 'driving_license' && r.verificationStatus === 'verified');
+    const epfoVerified = Boolean(empRecord || (candidateUser?.employmentStatus === 1 && candidateUser?.epfoData));
+    const employmentDone = epfoVerified || Boolean(manualEmpRecord);
+    const educationDone = qualCount > 0 || certCount > 0 || eduDigiDocs.length > 0;
+
+    newCandidateScore = await calculateEmployixScore({
+      aadhaarDone,
+      voterDone,
+      dlDone,
+      empDone: epfoVerified,
+      eduDone: eduVerified,
+      verifiedReferencesCount: completedRefCount,
+    });
+
+    newKycState = candidateUser?.kycStatus === 8 ? 8 : calculateKycStatus({
+      aadhaarDone,
+      voterDone,
+      dlDone,
+      empDone: employmentDone,
+      eduDone: educationDone,
+    });
+
+    await User.findByIdAndUpdate(candidateId, {
+      $set: {
+        employixScore: newCandidateScore,
+        kycStatus: newKycState,
+      },
+      $inc: { rewardPoints: 5 },
+    });
+  } catch (scoreCalcErr) {
+    console.error('Error recalculating candidate score on reference verification:', scoreCalcErr);
+    await User.findByIdAndUpdate(candidateId, {
+      $inc: { rewardPoints: 5 },
+    });
+  }
 
   // Record Reward Transaction
   await RewardTransaction.create({
-    userId: referral.referrerId._id,
+    userId: candidateId,
     referralId: referral._id,
     points: 5,
     type: 'credit',
@@ -563,7 +627,7 @@ const submitRefereeFeedback = async (
 
   // Real-time WebSocket emission to notify candidate screen instantly without refresh
   try {
-    emitToUser(referral.referrerId._id, 'reference_verified', {
+    emitToUser(candidateId, 'reference_verified', {
       referenceId: referral._id,
       refereeName: referral.refereeName,
       refereeEmail: referral.refereeEmail,
@@ -571,7 +635,9 @@ const submitRefereeFeedback = async (
       isFeedbackSubmitted: true,
       isPointsAwarded: true,
       points: 5,
-      candidateId: referral.referrerId._id,
+      newScore: newCandidateScore,
+      kycStatus: newKycState,
+      candidateId,
       message: `Professional Reference from ${referral.refereeName} has been verified! (+5 Points)`,
     });
   } catch (socketErr) {

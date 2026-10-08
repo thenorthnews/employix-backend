@@ -217,51 +217,13 @@ const verifyAadhaarDocument = async (req, res) => {
       },
     });
 
-    // Update User Document Status & Score (+20 Points) in DB
-    const currentUser = await User.findById(userId);
-    const newAadhaarStatus = 1;
-    const currentVoterStatus = currentUser?.voterStatus || 0;
-    const currentEmpStatus = currentUser?.employmentStatus || 0;
-    const currentDlStatus = currentUser?.dlStatus || 0;
-    const { hasEdu, eduVerified } = await getEducationState(userId);
-
-    const newKycState = calculateKycStatus({
-      aadhaarDone: true,
-      voterDone: currentVoterStatus === 1,
-      dlDone: currentDlStatus === 1,
-      empDone: currentEmpStatus === 1,
-      eduDone: hasEdu,
-    });
-    const scoreCfg = await ScoreConfig.getActiveConfig();
-    const completedRefCount = await Referral.countDocuments({
-      referrerId: userId,
-      $or: [{ isFeedbackSubmitted: true }, { status: 'completed' }, { isPointsAwarded: true }],
-    });
-    const newScore = await calculateEmployixScore({
-      aadhaarDone: true,
-      voterDone: currentVoterStatus === 1,
-      dlDone: currentDlStatus === 1,
-      empDone: currentEmpStatus === 1,
-      eduDone: eduVerified,
-      verifiedReferencesCount: completedRefCount,
-    });
-
-    await User.findByIdAndUpdate(userId, {
-      $set: {
-        aadhaarStatus: newAadhaarStatus,
-        kycStatus: newKycState,
-        employixScore: newScore,
-        isVerified: true,
-      },
-    });
-
     await Identification.findOneAndUpdate(
       { userId, documentType: 'aadhaar' },
       {
         $set: {
           verificationMethod: value.documentFront ? 'ocr_scan' : 'manual_number',
           verificationStatus: 'verified',
-          scoreEarned: scoreCfg.aadhaarScore,
+          scoreEarned: 20,
           consentGiven: true,
           consentTimestamp: new Date(),
           consentPurpose: value.consentPurpose || 'Aadhaar identity verification for Employix Trust Score',
@@ -272,14 +234,25 @@ const verifyAadhaarDocument = async (req, res) => {
       { upsert: true, new: true }
     );
 
+    const { kycState, newScore } = await getFullUserKycState(userId);
+
+    await User.findByIdAndUpdate(userId, {
+      $set: {
+        aadhaarStatus: 1,
+        kycStatus: kycState,
+        employixScore: newScore,
+        isVerified: true,
+      },
+    });
+
     return success(
       res,
       {
         ...result,
         aadhaarStatus: 1,
-        scoreBoost: scoreCfg.aadhaarScore,
+        scoreBoost: 20,
         newScore,
-        kycStatus: newKycState,
+        kycStatus: kycState,
       },
       'Aadhaar document verified successfully'
     );
@@ -645,41 +618,7 @@ const verifyVoterId = async (req, res) => {
       },
     });
 
-    const [currentUser, idRecords, eduState, completedRefCount, scoreCfg] = await Promise.all([
-      User.findById(userId),
-      Identification.find({
-        userId,
-        documentType: { $in: ['aadhaar', 'pan', 'voter_id', 'driving_license'] },
-        verificationStatus: 'verified',
-      }).lean(),
-      getEducationState(userId),
-      Referral.countDocuments({
-        referrerId: userId,
-        $or: [{ isFeedbackSubmitted: true }, { status: 'completed' }, { isPointsAwarded: true }],
-      }),
-      ScoreConfig.getActiveConfig(),
-    ]);
-
-    const currentAadhaarStatus = currentUser?.aadhaarStatus === 1 || idRecords.some((r) => r.documentType === 'aadhaar') ? 1 : 0;
-    const currentEmpStatus = currentUser?.employmentStatus === 1 ? 1 : 0;
-    const currentDlStatus = currentUser?.dlStatus === 1 || idRecords.some((r) => r.documentType === 'driving_license') ? 1 : 0;
-    const { hasEdu, eduVerified } = eduState;
-
-    const newKycStatus = calculateKycStatus({
-      aadhaarDone: currentAadhaarStatus === 1,
-      voterDone: true,
-      dlDone: currentDlStatus === 1,
-      empDone: currentEmpStatus === 1,
-      eduDone: hasEdu,
-    });
-    const newScore = await calculateEmployixScore({
-      aadhaarDone: currentAadhaarStatus === 1,
-      voterDone: true,
-      dlDone: currentDlStatus === 1,
-      empDone: currentEmpStatus === 1,
-      eduDone: eduVerified,
-      verifiedReferencesCount: completedRefCount,
-    });
+    const { kycState: newKycStatus, newScore } = await getFullUserKycState(userId);
 
     await User.findByIdAndUpdate(userId, {
       $set: {
@@ -690,7 +629,7 @@ const verifyVoterId = async (req, res) => {
       },
     });
 
-    return success(res, { ...result, voterStatus: 1, scoreBoost: scoreCfg.voterScore, newScore, kycStatus: newKycStatus }, 'Voter ID and address verified successfully');
+    return success(res, { ...result, voterStatus: 1, scoreBoost: 20, newScore, kycStatus: newKycStatus }, 'Voter ID and address verified successfully');
   } catch (err) {
     const { statusCode, message } = resolveErrorInfo(err, 'Invalid voter id number');
 
@@ -769,41 +708,7 @@ const processVoterOcr = async (req, res) => {
       },
     });
 
-    const [currentVoterUser, idRecords, eduState, completedRefCount, scoreCfg] = await Promise.all([
-      User.findById(userId),
-      Identification.find({
-        userId,
-        documentType: { $in: ['aadhaar', 'pan', 'voter_id', 'driving_license'] },
-        verificationStatus: 'verified',
-      }).lean(),
-      getEducationState(userId),
-      Referral.countDocuments({
-        referrerId: userId,
-        $or: [{ isFeedbackSubmitted: true }, { status: 'completed' }, { isPointsAwarded: true }],
-      }),
-      ScoreConfig.getActiveConfig(),
-    ]);
-
-    const aadhaarState = currentVoterUser?.aadhaarStatus === 1 || idRecords.some((r) => r.documentType === 'aadhaar') ? 1 : 0;
-    const empState = currentVoterUser?.employmentStatus === 1 ? 1 : 0;
-    const dlState = currentVoterUser?.dlStatus === 1 || idRecords.some((r) => r.documentType === 'driving_license') ? 1 : 0;
-    const { hasEdu, eduVerified } = eduState;
-
-    const voterKycStatus = calculateKycStatus({
-      aadhaarDone: aadhaarState === 1,
-      voterDone: true,
-      dlDone: dlState === 1,
-      empDone: empState === 1,
-      eduDone: hasEdu,
-    });
-    const voterNewScore = await calculateEmployixScore({
-      aadhaarDone: aadhaarState === 1,
-      voterDone: true,
-      dlDone: dlState === 1,
-      empDone: empState === 1,
-      eduDone: eduVerified,
-      verifiedReferencesCount: completedRefCount,
-    });
+    const { kycState: voterKycStatus, newScore: voterNewScore } = await getFullUserKycState(userId);
 
     await User.findByIdAndUpdate(userId, {
       $set: {
@@ -814,7 +719,7 @@ const processVoterOcr = async (req, res) => {
       },
     });
 
-    return success(res, { ...result, voterStatus: 1, scoreBoost: scoreCfg.voterScore, newScore: voterNewScore, kycStatus: voterKycStatus }, 'Voter ID OCR extracted and verified successfully');
+    return success(res, { ...result, voterStatus: 1, scoreBoost: 20, newScore: voterNewScore, kycStatus: voterKycStatus }, 'Voter ID OCR extracted and verified successfully');
   } catch (err) {
     const { statusCode, message } = resolveErrorInfo(err, 'Failed to process Voter ID OCR');
 
@@ -1256,34 +1161,7 @@ const processDlOcr = async (req, res) => {
       },
     });
 
-    const currentUser = await User.findById(userId);
-    const aadhaarDone = currentUser?.aadhaarStatus === 1;
-    const empDone = currentUser?.employmentStatus === 1;
-    const voterDone = currentUser?.voterStatus === 1;
-    const dlDone = true;
-    const { hasEdu, eduVerified } = await getEducationState(userId);
-
-    const dlKycStatus = calculateKycStatus({
-      aadhaarDone,
-      voterDone,
-      dlDone,
-      empDone,
-      eduDone: hasEdu,
-    });
-
-    const scoreCfg = await ScoreConfig.getActiveConfig();
-    const completedRefCount = await Referral.countDocuments({
-      referrerId: userId,
-      $or: [{ isFeedbackSubmitted: true }, { status: 'completed' }, { isPointsAwarded: true }],
-    });
-    const newScore = await calculateEmployixScore({
-      aadhaarDone,
-      voterDone,
-      dlDone,
-      empDone,
-      eduDone: eduVerified,
-      verifiedReferencesCount: completedRefCount,
-    });
+    const { kycState: dlKycStatus, newScore } = await getFullUserKycState(userId);
 
     await User.findByIdAndUpdate(userId, {
       $set: {
@@ -1385,7 +1263,8 @@ const getKycStatus = async (req, res) => {
       verificationStatus: { $in: ['VERIFIED', 'verified'] },
     });
     const manualEmpRecord = await ManualEmployment.findOne({ userId });
-    const employmentDone = user?.employmentStatus === 1 || Boolean(empRecord) || Boolean(manualEmpRecord);
+    const isEpfoVerified = Boolean(empRecord);
+    const employmentDone = isEpfoVerified || Boolean(manualEmpRecord);
 
     const { hasEdu, eduVerified, qualCount, certCount } = await getEducationState(userId);
     const educationDone = hasEdu;
@@ -1413,7 +1292,7 @@ const getKycStatus = async (req, res) => {
       aadhaarDone,
       voterDone,
       dlDone,
-      empDone: employmentDone,
+      empDone: isEpfoVerified,
       eduDone: eduVerified,
       verifiedReferencesCount: completedRefCount,
     });
@@ -1422,7 +1301,7 @@ const getKycStatus = async (req, res) => {
     if (
       user &&
       (user.aadhaarStatus !== (aadhaarDone ? 1 : 0) ||
-        user.employmentStatus !== (employmentDone ? 1 : 0) ||
+        user.employmentStatus !== (isEpfoVerified ? 1 : 0) ||
         user.voterStatus !== (voterDone ? 1 : 0) ||
         user.dlStatus !== (dlDone ? 1 : 0) ||
         (user.kycStatus !== 8 && user.kycStatus !== kycState) ||
@@ -1431,10 +1310,10 @@ const getKycStatus = async (req, res) => {
       await User.findByIdAndUpdate(userId, {
         $set: {
           aadhaarStatus: aadhaarDone ? 1 : 0,
-          employmentStatus: employmentDone ? 1 : 0,
+          employmentStatus: isEpfoVerified ? 1 : 0,
           voterStatus: voterDone ? 1 : 0,
           dlStatus: dlDone ? 1 : 0,
-          kycStatus: user.kycStatus === 8 ? 8 : kycState,
+          kycStatus: kycState,
           employixScore: currentScore,
           isVerified: aadhaarDone || voterDone || dlDone ? true : user.isVerified,
         },

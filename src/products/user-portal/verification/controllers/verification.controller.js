@@ -43,7 +43,7 @@ const {
 const { resolveErrorInfo, calculateEmployixScore, calculateKycStatus, parseStructuredAddress } = require('../../../../helpers/documentHelper');
 
 const getEducationState = async (userId) => {
-  const [qualCount, certCount, verifiedQualCount, verifiedCertCount, dlSession, userDoc] = await Promise.all([
+  const [qualCount, certCount, verifiedQualCount, verifiedCertCount, dlSession] = await Promise.all([
     Qualification.countDocuments({ userId }),
     Certification.countDocuments({ userId }),
     Qualification.countDocuments({
@@ -57,15 +57,26 @@ const getEducationState = async (userId) => {
       verificationStatus: 'verified',
     }),
     DigilockerSession.findOne({ userId, status: 'completed' }).sort({ updatedAt: -1 }).lean(),
-    User.findById(userId).select('educationStatus').lean(),
   ]);
 
-  const hasDigiDocs = Boolean(dlSession && Array.isArray(dlSession.documents) && dlSession.documents.length > 0);
-  const isDigiEdu = hasDigiDocs || userDoc?.educationStatus === 1;
-  const hasEdu = qualCount > 0 || certCount > 0 || isDigiEdu;
-  const eduVerified = verifiedQualCount > 0 || verifiedCertCount > 0 || isDigiEdu;
+  const nonEduTypes = ['aadhaar', 'pan', 'driving_license', 'voter_id'];
+  const eduDigiDocs = (dlSession?.documents || []).filter((d) => {
+    const norm = (d.docType || '').toLowerCase();
+    const name = (d.docName || '').toLowerCase();
+    return (
+      !nonEduTypes.includes(norm) &&
+      !name.includes('aadhaar') &&
+      !name.includes('pan card') &&
+      !name.includes('income tax') &&
+      !name.includes('voter') &&
+      !name.includes('driving license')
+    );
+  });
+  const hasEducationalDigiDocs = eduDigiDocs.length > 0;
+  const hasEdu = qualCount > 0 || certCount > 0 || hasEducationalDigiDocs;
+  const eduVerified = verifiedQualCount > 0 || verifiedCertCount > 0 || hasEducationalDigiDocs;
 
-  return { hasEdu, eduVerified, qualCount, certCount, verifiedQualCount, verifiedCertCount, hasDigiDocs };
+  return { hasEdu, eduVerified, qualCount, certCount, verifiedQualCount, verifiedCertCount, hasEducationalDigiDocs };
 };
 
 const getFullUserKycState = async (userId) => {
@@ -90,7 +101,8 @@ const getFullUserKycState = async (userId) => {
   const aadhaarDone = currentUser?.aadhaarStatus === 1 || records.some((r) => r.documentType === 'aadhaar' && r.verificationStatus === 'verified');
   const voterDone = currentUser?.voterStatus === 1 || records.some((r) => r.documentType === 'voter_id' && r.verificationStatus === 'verified');
   const dlDone = currentUser?.dlStatus === 1 || records.some((r) => r.documentType === 'driving_license' && r.verificationStatus === 'verified');
-  const employmentDone = currentUser?.employmentStatus === 1 || Boolean(empRecord) || Boolean(manualEmpRecord);
+  const epfoVerified = Boolean(empRecord || (currentUser?.employmentStatus === 1 && currentUser?.epfoData));
+  const employmentDone = epfoVerified || Boolean(manualEmpRecord);
   const educationDone = eduState.hasEdu;
 
   const kycState = currentUser?.kycStatus === 8 ? 8 : calculateKycStatus({
@@ -105,8 +117,8 @@ const getFullUserKycState = async (userId) => {
     aadhaarDone,
     voterDone,
     dlDone,
-    empDone: employmentDone,
-    eduDone: eduState.eduVerified,
+    empDone: epfoVerified, // Only EPFO awards employment points (30)
+    eduDone: eduState.eduVerified, // Only DigiLocker / verified education awards education points (20)
     verifiedReferencesCount: completedRefCount,
   });
 
@@ -118,6 +130,7 @@ const getFullUserKycState = async (userId) => {
     voterDone,
     dlDone,
     employmentDone,
+    epfoVerified,
     educationDone,
     eduState,
   };
@@ -1116,16 +1129,16 @@ const addManualEmployment = async (req, res) => {
     const { hasEdu, eduVerified } = await getEducationState(userId);
 
     const hasEpfo = await EmploymentVerification.exists({ userId });
-    const isEmpDone = Boolean(hasEpfo || (currentUser?.employmentStatus === 1 && currentUser?.epfoData));
+    const isEpfoVerified = Boolean(hasEpfo || (currentUser?.employmentStatus === 1 && currentUser?.epfoData));
+    const isEmpDoneForKyc = true;
 
     const newKycState = calculateKycStatus({
       aadhaarDone,
       voterDone,
       dlDone,
-      empDone: isEmpDone,
+      empDone: isEmpDoneForKyc,
       eduDone: hasEdu,
     });
-    const scoreCfg = await ScoreConfig.getActiveConfig();
     const completedRefCount = await Referral.countDocuments({
       referrerId: userId,
       $or: [{ isFeedbackSubmitted: true }, { status: 'completed' }, { isPointsAwarded: true }],
@@ -1134,22 +1147,22 @@ const addManualEmployment = async (req, res) => {
       aadhaarDone,
       voterDone,
       dlDone,
-      empDone: isEmpDone,
+      empDone: isEpfoVerified,
       eduDone: eduVerified,
       verifiedReferencesCount: completedRefCount,
     });
 
     await User.findByIdAndUpdate(userId, {
       $set: {
-        employmentStatus: isEmpDone ? 1 : 0,
+        employmentStatus: isEpfoVerified ? 1 : 0,
         kycStatus: newKycState,
         employixScore: newScore,
       },
     });
-    logger.info('Manual employment record added (Self-Reported, Not Verified)', { correlationId, userId, companyName, isEmpDone });
+    logger.info('Manual employment record added (Self-Reported, Not Verified)', { correlationId, userId, companyName, isEpfoVerified });
     return success(
       res,
-      { record: newRecord, employmentStatus: isEmpDone ? 1 : 0, kycStatus: newKycState, employixScore: newScore },
+      { record: newRecord, employmentStatus: isEpfoVerified ? 1 : 0, kycStatus: newKycState, employixScore: newScore },
       'Employment record added successfully as Self-Reported'
     );
   } catch (err) {
@@ -1552,16 +1565,17 @@ const addQualification = async (req, res) => {
       file,
     });
 
-    const { kycState, newScore, aadhaarDone, voterDone, dlDone, employmentDone } = await getFullUserKycState(userId);
+    const { kycState, newScore, aadhaarDone, voterDone, dlDone, epfoVerified, eduState } = await getFullUserKycState(userId);
 
     await User.findByIdAndUpdate(userId, {
       $set: {
         kycStatus: kycState,
         employixScore: newScore,
         aadhaarStatus: aadhaarDone ? 1 : 0,
-        employmentStatus: employmentDone ? 1 : 0,
+        employmentStatus: epfoVerified ? 1 : 0,
         voterStatus: voterDone ? 1 : 0,
         dlStatus: dlDone ? 1 : 0,
+        educationStatus: eduState.eduVerified ? 1 : 0,
       },
     });
 
@@ -1593,8 +1607,14 @@ const deleteQualification = async (req, res) => {
   const { id } = req.params;
   try {
     await deleteQualificationService(userId, id);
-    const { kycState, newScore } = await getFullUserKycState(userId);
-    await User.findByIdAndUpdate(userId, { $set: { kycStatus: kycState, employixScore: newScore } });
+    const { kycState, newScore, eduState } = await getFullUserKycState(userId);
+    await User.findByIdAndUpdate(userId, {
+      $set: {
+        kycStatus: kycState,
+        employixScore: newScore,
+        educationStatus: eduState.eduVerified ? 1 : 0,
+      },
+    });
 
     return success(res, { kycStatus: kycState, employixScore: newScore }, 'Qualification deleted successfully');
   } catch (err) {
@@ -1618,16 +1638,17 @@ const addCertification = async (req, res) => {
       file,
     });
 
-    const { kycState, newScore, aadhaarDone, voterDone, dlDone, employmentDone } = await getFullUserKycState(userId);
+    const { kycState, newScore, aadhaarDone, voterDone, dlDone, epfoVerified, eduState } = await getFullUserKycState(userId);
 
     await User.findByIdAndUpdate(userId, {
       $set: {
         kycStatus: kycState,
         employixScore: newScore,
         aadhaarStatus: aadhaarDone ? 1 : 0,
-        employmentStatus: employmentDone ? 1 : 0,
+        employmentStatus: epfoVerified ? 1 : 0,
         voterStatus: voterDone ? 1 : 0,
         dlStatus: dlDone ? 1 : 0,
+        educationStatus: eduState.eduVerified ? 1 : 0,
       },
     });
 

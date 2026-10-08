@@ -158,37 +158,50 @@ async function getCurrentUserService(userId, req = null) {
     console.error('Error loading references:', refErr);
   }
 
-  // Calculate dynamic 100% Employee Profile Score
-  // Aadhaar (20), Voter (20), Education (20), Employment (30), References (5 pts each, max 2 refs = 10 pts)
-  const isDigilockerVerified = digilockerDocuments.length > 0 || user.educationStatus === 1;
+  // Filter DigiLocker documents for genuine educational records only
+  const educationalDigiDocs = digilockerDocuments.filter((d) => {
+    const norm = (d.docType || '').toLowerCase();
+    const name = (d.docName || '').toLowerCase();
+    return (
+      !['aadhaar', 'pan', 'driving_license', 'voter_id'].includes(norm) &&
+      !name.includes('aadhaar') &&
+      !name.includes('pan card') &&
+      !name.includes('income tax') &&
+      !name.includes('voter') &&
+      !name.includes('driving license')
+    );
+  });
+  const isDigilockerEduVerified = educationalDigiDocs.length > 0;
+  const eduVerified =
+    isDigilockerEduVerified ||
+    userQualifications.some((q) => q.isVerified === true && q.verificationStatus === 'verified') ||
+    userCertifications.some((c) => c.isVerified === true && c.verificationStatus === 'verified');
+
   const aadhaarDone = user.aadhaarStatus === 1 || Boolean(aadhaarData);
   const voterDone = user.voterStatus === 1 || Boolean(voterData);
   const dlDone = user.dlStatus === 1 || Boolean(dlData);
   const hasEpfo = epfoEmployment.length > 0 || (Array.isArray(rawEpfoDocs) && rawEpfoDocs.length > 0);
-  const empDone = user.employmentStatus === 1 || hasEpfo;
-  const hasEdu = userQualifications.length > 0 || userCertifications.length > 0 || isDigilockerVerified;
-  const eduVerified =
-    isDigilockerVerified ||
-    userQualifications.some((q) => q.isVerified === true && q.verificationStatus === 'verified') ||
-    userCertifications.some((c) => c.isVerified === true && c.verificationStatus === 'verified');
+  const empVerified = Boolean(hasEpfo);
+  const empDoneForKyc = empVerified || manualEmployment.length > 0;
+  const hasEduForKyc = userQualifications.length > 0 || userCertifications.length > 0 || isDigilockerEduVerified;
 
   const scoringData = await calculateEmployeeScore({
     aadhaarDone,
     voterDone,
     eduDone: eduVerified,
-    empDone,
+    empDone: empVerified,
     verifiedReferencesCount: completedReferencesCount,
   });
 
-  // Calculate score from verified items (DigiLocker education awards allocated education score, not 100)
-  const currentScore = user.employixScore >= 100 ? 100 : scoringData.finalPercentage;
+  // Calculate score from verified items only
+  const currentScore = scoringData.finalPercentage;
 
   const kycState = user.kycStatus === 8 ? 8 : calculateKycStatus({
     aadhaarDone,
     voterDone,
     dlDone,
-    empDone,
-    eduDone: hasEdu,
+    empDone: empDoneForKyc,
+    eduDone: hasEduForKyc,
   });
 
   // Ensure employixId exists on user
@@ -219,9 +232,9 @@ async function getCurrentUserService(userId, req = null) {
       currentAddress,
       employixScore: currentScore,
       kycStatus: kycState,
-      employmentStatus: empDone ? 1 : 0,
+      employmentStatus: empVerified ? 1 : 0,
       dlStatus: dlDone ? 1 : 0,
-      educationStatus: isDigilockerVerified || eduVerified ? 1 : 0,
+      educationStatus: eduVerified ? 1 : 0,
     },
   });
 
@@ -242,9 +255,9 @@ async function getCurrentUserService(userId, req = null) {
     currentAddress,
     employixScore: currentScore,
     kycStatus: kycState,
-    employmentStatus: empDone ? 1 : 0,
+    employmentStatus: empVerified ? 1 : 0,
     dlStatus: dlDone ? 1 : 0,
-    educationStatus: isDigilockerVerified || eduVerified ? 1 : 0,
+    educationStatus: eduVerified ? 1 : 0,
     aadhaarData,
     panData,
     voterData,

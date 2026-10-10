@@ -470,29 +470,25 @@ const getLevenshteinDistance = (a, b) => {
 };
 
 /**
- * Checks if two words match (exact or 1 edit distance for minor typo/OCR noise for words with 4+ chars)
+ * Checks if two words match exactly (case & whitespace normalized)
  */
 const isWordMatching = (w1, w2) => {
   if (!w1 || !w2) return false;
-  if (w1 === w2) return true;
-  if (w1.length >= 4 && w2.length >= 4) {
-    return getLevenshteinDistance(w1, w2) <= 1;
-  }
-  return false;
+  return w1.toLowerCase().trim() === w2.toLowerCase().trim();
 };
 
 /**
  * Validates if the name on the Aadhaar card matches the registered user's profile name.
  * Rule specification:
- * - "Neha Jolly" vs "NEHA JOLLY" -> Match (case-insensitive)
- * - "NEHA JOLLY" vs "Neha Jolly" -> Match
+ * - "Neha Jolly" vs "NEHA JOLLY" -> Match (exact case-insensitive)
  * - "Neha Jolly" vs "Neha  Jolly" -> Match (space-insensitive)
+ * - "Neha Jolly" vs "Neha Johly" -> Mismatch ("jolly" !== "johly")
  * - "Neha Jolly" vs "Neha Jolly Kumar" -> Mismatch (different word count)
  * - "Neha Jolly" vs "Neha Sharma" -> Mismatch (different last name)
- * - "Neha Jolly" vs "Rahul Jolly" -> Mismatch (different first name)
  *
  * @param {string} registeredName
- * @param {string} aadhaarName
+ * @param {string} docName
+ * @param {string} docLabel
  * @returns {{ isMatch: boolean, reason?: string }}
  */
 const validateDocumentNameMatch = (registeredName, docName, docLabel = 'Aadhaar') => {
@@ -515,27 +511,27 @@ const validateDocumentNameMatch = (registeredName, docName, docLabel = 'Aadhaar'
   if (regTokens.length !== docTokens.length) {
     return {
       isMatch: false,
-      reason: `${docLabel} name does not match your registered name.`,
+      reason: `${docLabel} card name ("${docName}") does not match your registered profile name ("${registeredName}"). Full name must match exactly.`,
     };
   }
 
-  // Same word count: check word-by-word in order
-  const inOrderMatch = regTokens.every((token, idx) => isWordMatching(token, docTokens[idx]));
+  // Same word count: check exact word-by-word in order
+  const inOrderMatch = regTokens.every((token, idx) => token === docTokens[idx]);
   if (inOrderMatch) {
     return { isMatch: true };
   }
 
-  // Permutation match (same words in different order e.g. "Jolly Neha" vs "Neha Jolly")
+  // Permutation exact match (same exact words in different order e.g. "Jolly Neha" vs "Neha Jolly")
   const sortedReg = [...regTokens].sort();
   const sortedDoc = [...docTokens].sort();
-  const permMatch = sortedReg.every((token, idx) => isWordMatching(token, sortedDoc[idx]));
+  const permMatch = sortedReg.every((token, idx) => token === sortedDoc[idx]);
   if (permMatch) {
     return { isMatch: true };
   }
 
   return {
     isMatch: false,
-    reason: `${docLabel} name does not match your registered name.`,
+    reason: `${docLabel} card name ("${docName}") does not match your registered profile name ("${registeredName}"). Full name must match your official ID exactly.`,
   };
 };
 

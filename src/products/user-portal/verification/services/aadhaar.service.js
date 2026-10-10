@@ -226,7 +226,12 @@ const saveAadhaarRecord = async ({
 
   // Sync to User collection
   const existingUser = await User.findById(userId);
-  const userUpdates = {};
+  const userUpdates = {
+    aadhaarStatus: 1,
+  };
+  if (ocrData.name && ocrData.name.trim()) {
+    userUpdates.name = ocrData.name.trim();
+  }
   if (!existingUser?.currentAddress?.fullAddress && addressPayload?.fullAddress) {
     userUpdates.currentAddress = addressPayload;
   }

@@ -1,9 +1,8 @@
 const {
-  getCurrentUserService,updateProfileService,deleteAccountService
+  getCurrentUserService, updateProfileService, deleteAccountService, getPublicVerifiedProfileService
 } = require('./user.service');
 const { success, created, badRequest, unauthorized, serverError } = require('../../utils/response');
-const { registerSchema, verifyOtpSchema, loginSchema,resendOtpSchema,updateProfileSchema } = require('../../validation/authValidation');
-
+const { registerSchema, verifyOtpSchema, loginSchema, resendOtpSchema, updateProfileSchema } = require('../../validation/authValidation');
 
 async function getCurrentUser(req, res, next) {
   try {
@@ -12,6 +11,16 @@ async function getCurrentUser(req, res, next) {
     return success(res, user, 'Current user profile fetched successfully');
   } catch (err) {
    return serverError(res, err);
+  }
+}
+
+async function getPublicVerifiedProfile(req, res, next) {
+  try {
+    const { identifier } = req.params;
+    const profile = await getPublicVerifiedProfileService(identifier, req);
+    return success(res, profile, 'Candidate verified profile fetched successfully');
+  } catch (err) {
+    return badRequest(res, err.message || 'Candidate verified profile not found');
   }
 }
 async function updateProfile(req, res, next) {
@@ -62,4 +71,4 @@ async function deleteAccount(req, res, next)
 
 
 
-module.exports = { getCurrentUser ,updateProfile,deleteAccount};
+module.exports = { getCurrentUser, getPublicVerifiedProfile, updateProfile, deleteAccount };

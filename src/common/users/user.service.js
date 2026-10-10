@@ -383,4 +383,147 @@ const deleteAccountService = async (userId) => {
   return true;
 };
 
-module.exports = { getCurrentUserService, updateProfileService, deleteAccountService };
+async function getPublicVerifiedProfileService(identifier, req = null) {
+  if (!identifier || typeof identifier !== 'string') {
+    throw new Error('Valid candidate identifier is required');
+  }
+
+  const cleanId = identifier.trim();
+  const rawIdNoHash = cleanId.replace(/^#/, '');
+
+  let user = null;
+
+  // 1. Try finding by employixId
+  user = await User.findOne({
+    $or: [
+      { employixId: cleanId },
+      { employixId: `#${rawIdNoHash}` },
+      { employixId: rawIdNoHash },
+      { employixId: { $regex: new RegExp(`^#?${rawIdNoHash}$`, 'i') } }
+    ],
+    isDeleted: { $ne: true }
+  }).select('-password -otp -otpExpiry -resetPasswordToken -resetPasswordExpiry');
+
+  // 2. If not found and valid ObjectId, find by _id
+  if (!user && cleanId.match(/^[0-9a-fA-F]{24}$/)) {
+    user = await User.findOne({ _id: cleanId, isDeleted: { $ne: true } })
+      .select('-password -otp -otpExpiry -resetPasswordToken -resetPasswordExpiry');
+  }
+
+  if (!user) {
+    throw new Error('Candidate verified profile not found');
+  }
+
+  const fullData = await getCurrentUserService(user._id, req);
+
+  // Mask sensitive candidate contacts for public employer view
+  const maskEmail = (email) => {
+    if (!email || typeof email !== 'string') return '';
+    const parts = email.split('@');
+    if (parts.length !== 2) return email;
+    const name = parts[0];
+    const domain = parts[1];
+    const visibleStart = name.slice(0, 1);
+    const visibleEnd = name.length > 2 ? name.slice(-1) : '';
+    return `${visibleStart}****${visibleEnd}@${domain}`;
+  };
+
+  const maskPhone = (phone) => {
+    if (!phone || typeof phone !== 'string') return '';
+    const clean = phone.replace(/\D/g, '');
+    if (clean.length < 4) return '******';
+    return `+91 ******${clean.slice(-4)}`;
+  };
+
+  return {
+    _id: fullData._id,
+    employixId: fullData.employixId,
+    name: fullData.name,
+    designation: fullData.designation || 'Professional',
+    profileImage: fullData.profileImage,
+    gender: fullData.gender,
+    city: fullData.city || fullData.currentAddress?.city || 'India',
+    state: fullData.state || fullData.currentAddress?.state || '',
+    maskedEmail: maskEmail(fullData.email),
+    maskedPhone: maskPhone(fullData.phoneNumber || fullData.phone),
+    isAadhaarVerified: Boolean(fullData.aadhaarStatus === 1 || fullData.aadhaarData),
+    isVoterVerified: Boolean(fullData.voterStatus === 1 || fullData.voterData),
+    isDlVerified: Boolean(fullData.dlStatus === 1 || fullData.dlData),
+    isPanVerified: Boolean(fullData.panStatus === 1 || fullData.panData),
+    isEmploymentVerified: Boolean(fullData.employmentStatus === 1 || fullData.epfoEmployment?.length > 0),
+    isEducationVerified: Boolean(fullData.educationStatus === 1 || fullData.qualifications?.length > 0 || fullData.certifications?.length > 0),
+    employixScore: fullData.employixScore || 0,
+    profileScoring: fullData.profileScoring || null,
+    kycStatus: fullData.kycStatus,
+    qualifications: (fullData.qualifications || []).map(q => {
+      const isDigi = Boolean(
+        q.isDigilocker || 
+        q.verificationMethod === 'DigiLocker' || 
+        q.badge === 'DigiLocker Verified' ||
+        (fullData.digilockerDocuments && fullData.digilockerDocuments.some(d => d.documentName === q.degree || d.title === q.degree))
+      );
+      return {
+        _id: q._id,
+        degree: q.degree || q.qualification,
+        institution: q.institution || q.college || q.university,
+        fieldOfStudy: q.fieldOfStudy || q.branch,
+        graduationYear: q.graduationYear || q.yearOfPassing || q.year,
+        isVerified: Boolean(q.isVerified || q.verificationStatus === 'verified' || isDigi),
+        verificationStatus: q.verificationStatus || (isDigi ? 'verified' : 'unverified'),
+        verificationMethod: isDigi ? 'DigiLocker Verified' : 'Manual Document Verified',
+        isDigilocker: isDigi
+      };
+    }),
+    certifications: (fullData.certifications || []).map(c => {
+      const isDigi = Boolean(
+        c.isDigilocker || 
+        c.verificationMethod === 'DigiLocker' || 
+        c.badge === 'DigiLocker Verified'
+      );
+      return {
+        _id: c._id,
+        name: c.name || c.title || c.certificateName,
+        issuingOrganization: c.issuingOrganization || c.issuer,
+        issueDate: c.issueDate || c.year,
+        isVerified: Boolean(c.isVerified || c.verificationStatus === 'verified' || isDigi),
+        verificationMethod: isDigi ? 'DigiLocker Verified' : 'Manual Document Verified',
+        isDigilocker: isDigi
+      };
+    }),
+    employmentHistory: [
+      ...(fullData.epfoEmployment || []).map(e => ({
+        employerName: e.employerName || e.establishmentName || e.companyName,
+        designation: e.designation || e.role || fullData.designation,
+        memberId: e.memberId ? `${e.memberId.slice(0, 4)}****` : null,
+        doj: e.doj || e.joiningDate || e.startDate,
+        doe: e.doe || e.exitDate || e.endDate || 'Present',
+        isVerified: true,
+        verificationMethod: 'EPFO Verified',
+        type: 'EPFO Verified'
+      })),
+      ...(fullData.manualEmployment || []).map(m => ({
+        employerName: m.companyName || m.employerName,
+        designation: m.designation || m.role,
+        doj: m.startDate || m.joiningDate,
+        doe: m.isCurrent ? 'Present' : (m.endDate || 'Relieved'),
+        isVerified: Boolean(m.isVerified),
+        verificationMethod: 'Manual Document Verified',
+        type: 'Manual Document Verified'
+      }))
+    ],
+    referencesCount: fullData.verifiedReferencesCount || (fullData.references || []).length,
+    referencesSummary: (fullData.references || []).filter(r => r.status === 'completed' || r.isFeedbackSubmitted).map(r => ({
+      relationship: r.relationship,
+      company: r.companyName || r.company,
+      overallRating: r.feedback?.ratings?.overallPerformance || r.feedback?.overallRating || 5,
+      workEthicRating: r.feedback?.ratings?.workEthic || 5,
+      teamworkRating: r.feedback?.ratings?.teamwork || 5,
+      technicalRating: r.feedback?.ratings?.technicalSkills || 5,
+      recommendation: r.feedback?.recommendation || 'Highly Recommended',
+      verifiedAt: r.feedback?.createdAt || r.updatedAt
+    })),
+    verifiedAt: fullData.updatedAt || new Date(),
+  };
+}
+
+module.exports = { getCurrentUserService, updateProfileService, deleteAccountService, getPublicVerifiedProfileService };

@@ -67,34 +67,45 @@ const storage = multer.diskStorage({
 // PROFILE IMAGE UPLOAD
 // =====================================
 
+const ALL_IMAGE_MIMES = [
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+  'image/heic-sequence',
+  'image/heif-sequence',
+  'application/octet-stream',
+];
+
+const ALL_IMAGE_EXTS = [
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.webp',
+  '.heic',
+  '.heif',
+];
+
+const ALL_DOC_EXTS = [...ALL_IMAGE_EXTS, '.pdf'];
+const ALL_DOC_MIMES = [...ALL_IMAGE_MIMES, 'application/pdf'];
+
 const uploadProfileImage = multer({
-
   storage,
-
   limits: {
     fileSize: 5 * 1024 * 1024, // 5 MB
   },
-
-
   fileFilter: (req, file, cb) => {
-    const allowedTypes = [
-      'image/jpeg',
-      'image/jpg',
-      'image/png',
-      'image/webp',
-    ];
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const mime = (file.mimetype || '').toLowerCase();
 
-    if (allowedTypes.includes(file.mimetype)) {
+    if (mime.startsWith('image/') || ALL_IMAGE_MIMES.includes(mime) || ALL_IMAGE_EXTS.includes(ext)) {
       cb(null, true);
     } else {
-      cb(
-        new Error(
-          'Only JPG, PNG and WEBP images are allowed'
-        )
-      );
+      cb(new Error('Invalid image format. Supported formats: JPEG, PNG, HEIC, WEBP.'));
     }
   },
-
 });
 
 // =====================================
@@ -103,27 +114,22 @@ const uploadProfileImage = multer({
 
 const uploadVerificationDocs = multer({
   storage: multer.memoryStorage(),
-
   limits: {
     fileSize: 5 * 1024 * 1024, // 5 MB
   },
-
   fileFilter: (req, file, cb) => {
-    const allowedTypes = [
-      'image/jpeg',
-      'image/png',
-      'image/jpg',
-      'application/pdf',
-    ];
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const mime = (file.mimetype || '').toLowerCase();
 
-    if (allowedTypes.includes(file.mimetype)) {
+    if (
+      mime.startsWith('image/') ||
+      mime === 'application/pdf' ||
+      ALL_DOC_MIMES.includes(mime) ||
+      ALL_DOC_EXTS.includes(ext)
+    ) {
       cb(null, true);
     } else {
-      cb(
-        new Error(
-          'Invalid file format. Only JPEG, PNG, JPG, and PDF are allowed'
-        )
-      );
+      cb(new Error('Invalid file format. Supported formats: JPEG, PNG, HEIC, WEBP, PDF.'));
     }
   },
 });
@@ -171,20 +177,21 @@ const docStorage = multer.diskStorage({
 const uploadDocument = multer({
   storage: docStorage,
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10 MB
+    fileSize: 5 * 1024 * 1024, // 5 MB
   },
   fileFilter: (req, file, cb) => {
-    const allowedTypes = [
-      'image/jpeg',
-      'image/png',
-      'image/jpg',
-      'image/webp',
-      'application/pdf',
-    ];
-    if (allowedTypes.includes(file.mimetype)) {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const mime = (file.mimetype || '').toLowerCase();
+
+    if (
+      mime.startsWith('image/') ||
+      mime === 'application/pdf' ||
+      ALL_DOC_MIMES.includes(mime) ||
+      ALL_DOC_EXTS.includes(ext)
+    ) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file format. Only JPG, PNG, WEBP, and PDF are allowed'));
+      cb(new Error('Invalid file format. Supported formats: JPEG, PNG, HEIC, WEBP, GIF, BMP, PDF.'));
     }
   },
 });

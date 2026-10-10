@@ -6,7 +6,18 @@ const multerFileSchema = Joi.object({
   originalname: Joi.string().required(),
   encoding: Joi.string().required(),
   mimetype: Joi.string()
-    .valid('image/jpeg', 'image/png', 'image/jpg', 'application/pdf')
+    .valid(
+      'image/jpeg',
+      'image/png',
+      'image/jpg',
+      'image/webp',
+      'image/heic',
+      'image/heif',
+      'image/heic-sequence',
+      'image/heif-sequence',
+      'application/pdf',
+      'application/octet-stream'
+    )
     .required(),
   buffer: Joi.binary().required(),
   size: Joi.number().max(5 * 1024 * 1024).required(), // Max 5MB

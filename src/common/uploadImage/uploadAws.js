@@ -9,20 +9,18 @@ const upload = multer({
   storage,
 
   limits: {
-    fileSize: 5 * 1024 * 1024, 
+    fileSize: 5 * 1024 * 1024, // 5 MB
   },
 
   fileFilter: (req, file, cb) => {
-    const allowedTypes = [
-      'image/jpeg',
-      'image/png',
-      'image/webp',
-    ];
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const mime = (file.mimetype || '').toLowerCase();
+    const allowedExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif'];
 
-    if (allowedTypes.includes(file.mimetype)) {
+    if (mime.startsWith('image/') || mime === 'application/octet-stream' || allowedExts.includes(ext)) {
       cb(null, true);
     } else {
-      cb(new Error('Only JPG, PNG and WEBP images are allowed'));
+      cb(new Error('Invalid image format. Supported formats: JPEG, PNG, HEIC, WEBP.'));
     }
   },
 });

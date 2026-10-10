@@ -1,10 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const { getCurrentUser,updateProfile,deleteAccount } = require('./user.controller');
+const { getCurrentUser, getPublicVerifiedProfile, updateProfile, deleteAccount } = require('./user.controller');
 const { requireAuth } = require("../../middleware/auth");
 const { uploadProfileImage } = require('../uploadImage/uploadMulture');
 
-router.get("/me",requireAuth,getCurrentUser)
+// Public route for employers/recruiters to verify candidate ID without login
+router.get("/public-profile/:identifier", getPublicVerifiedProfile);
+
+router.get("/me", requireAuth, getCurrentUser);
 router.put(
   '/updateMe',
   requireAuth,

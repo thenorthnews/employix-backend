@@ -58,10 +58,9 @@ const emitToUser = (userId, eventName, payload = {}) => {
   if (userId) {
     io.to(`user_${userId}`).emit(eventName, data);
     console.log(`[Socket.io] Emitted '${eventName}' to room user_${userId}`);
+  } else {
+    io.emit(eventName, data);
   }
-
-  // Also broadcast so any active tab for this user receives it reliably
-  io.emit(eventName, data);
 };
 
 module.exports = {
